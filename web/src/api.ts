@@ -125,7 +125,7 @@ export interface ExportTaskView {
   id: string
   convKey: string
   convName: string
-  format: 'html' | 'pdf'
+  format: 'html' | 'pdf' | 'md'
   target: string
   status: 'running' | 'completed' | 'failed'
   progress: number
@@ -142,6 +142,7 @@ export interface DayCount {
 export interface MessagesPage {
   messages: Message[]
   hasMore: boolean
+  hasNewer?: boolean
   covered: boolean
   tsFrom: number
   tsTo: number
@@ -199,13 +200,10 @@ export const api = {
     req<{ conversations: LibraryConversation[] }>('/api/conversations'),
   senders: (key: string) =>
     req<{ senders: Sender[] }>(`/api/conversations/${encodeURIComponent(key)}/senders`),
-  days: (key: string, sender = '') => {
-    const query = new URLSearchParams()
-    if (sender) query.set('sender', sender)
-    return req<{ days: DayCount[] }>(
-      `/api/conversations/${encodeURIComponent(key)}/days?${query.toString()}`,
-    )
-  },
+  days: (key: string) =>
+    req<{ days: DayCount[] }>(
+      `/api/conversations/${encodeURIComponent(key)}/days`,
+    ),
   messages: (key: string, params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {
@@ -215,20 +213,34 @@ export const api = {
       `/api/conversations/${encodeURIComponent(key)}/messages?${query.toString()}`,
     )
   },
+  messageIds: (key: string, params: Record<string, string | number>) => {
+    const query = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== '' && v !== undefined && v !== null) query.set(k, String(v))
+    }
+    return req<{ ids: number[] }>(
+      `/api/conversations/${encodeURIComponent(key)}/ids?${query.toString()}`,
+    )
+  },
   exportRange: (payload: {
     key: string
-    format: 'html' | 'pdf'
-    dir: string
-    tsFrom: number
-    tsTo: number
+    format: 'html' | 'pdf' | 'md'
+    target: string
+    tsFrom?: number
+    tsTo?: number
     sender?: string
+    ids?: number[]
   }) =>
     req<ExportTaskView>('/api/export', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   exportStatus: (id: string) => req<ExportTaskView>(`/api/export/${id}`),
-  pickDir: () => req<{ path: string }>('/api/pick-dir', { method: 'POST' }),
+  savePath: (payload: { filename: string; format: 'html' | 'pdf' | 'md' }) =>
+    req<{ path: string }>('/api/save-path', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   stats: (key: string, params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

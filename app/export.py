@@ -1,8 +1,9 @@
-"""把选中区间的消息导出为 HTML 或 PDF。
+"""把选中区间的消息导出为 HTML、PDF 或 Markdown。
 
 HTML：图片/头像/表情全部内联为 base64，单文件即可分享；超过 12 MB 的
 音视频/附件才落到 `<名字>_assets/`。页面自带右侧日期轴与当前日期浮标。
 PDF：复用现有 reportlab 排版器，按它要求的 output/ 目录结构临时组装后运行。
+Markdown：纯文本，只保留文字与媒体占位符，不生成或引用任何图片。
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import html
 import json
 import mimetypes
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -30,17 +30,6 @@ EMBED_LIMIT = 12 * 1024 * 1024
 
 def media_root(conv_key: str) -> Path:
     return MEDIA_DIR / conv_key.replace(":", "_")
-
-
-def safe_filename(name: str) -> str:
-    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")
-    return cleaned or "chat"
-
-
-def export_name(conv: dict, ts_from: int, ts_to: int, suffix: str) -> str:
-    start = time.strftime("%Y%m%d", time.localtime(ts_from))
-    end = time.strftime("%Y%m%d", time.localtime(ts_to))
-    return f"{safe_filename(conv['name'])}_{start}-{end}.{suffix}"
 
 
 def _block_list(payload: dict) -> list[dict]:
@@ -302,6 +291,20 @@ SCRIPT = """
 """
 
 
+def _message_total(conv_key: str, ts_from: int, ts_to: int, sender: str,
+                   ids: list[int] | None) -> int:
+    if ids:
+        return len(set(ids))
+    return store.count_messages(conv_key, ts_from, ts_to, sender)
+
+
+def _message_source(conv_key: str, ts_from: int, ts_to: int, sender: str,
+                    ids: list[int] | None):
+    if ids:
+        return store.iter_messages_by_ids(conv_key, ids)
+    return store.iter_messages(conv_key, ts_from, ts_to, sender)
+
+
 def export_html(
     conv: dict,
     ts_from: int,
@@ -309,16 +312,19 @@ def export_html(
     target: Path,
     sender: str = "",
     progress=None,
+    ids: list[int] | None = None,
 ) -> Path:
     base = target.with_name(target.stem + "_assets")
     assets = _Assets(conv["key"], base)
     senders = {item["uin"]: item for item in store.list_senders(conv["key"])}
-    total = store.count_messages(conv["key"], ts_from, ts_to, sender)
+    total = _message_total(conv["key"], ts_from, ts_to, sender, ids)
     rows: list[str] = []
     day_links: list[tuple[str, str]] = []
     last_day = ""
     names: dict[str, str] = {}
-    for index, message in enumerate(store.iter_messages(conv["key"], ts_from, ts_to, sender), 1):
+    for index, message in enumerate(
+        _message_source(conv["key"], ts_from, ts_to, sender, ids), 1
+    ):
         payload = message["payload"]
         ts = message["ts"]
         day_key = time.strftime("%Y-%m-%d", time.localtime(ts))
@@ -396,6 +402,86 @@ def export_html(
     return target
 
 
+def _md_block(block: dict) -> str:
+    """把单个消息块转成纯文本 Markdown，不引用任何媒体文件。"""
+    kind = block.get("t") or ""
+    content = block.get("c") or {}
+    if kind == "m":
+        return _text(block)
+    if kind == "reply":
+        text = _text(block)
+        return "\n".join(f"> 引用：{line}" if i == 0 else f"> {line}"
+                         for i, line in enumerate(text.splitlines() or [""]))
+    labels = {
+        "img": "[图片]",
+        "marketface": "[表情]",
+        "qqemoji": "[表情]",
+        "voice": "[语音]",
+        "video": "[视频]",
+    }
+    if kind in labels:
+        return labels[kind]
+    if kind == "file":
+        name = str(content.get("name") or content.get("path") or "文件")
+        size = _human_size(content.get("size"))
+        return f"[文件：{name}{'，' + size if size else ''}]"
+    if kind in ("uns", "err"):
+        return _text(block)
+    return f"[{kind or '未支持'}]"
+
+
+def export_markdown(
+    conv: dict,
+    ts_from: int,
+    ts_to: int,
+    target: Path,
+    sender: str = "",
+    progress=None,
+    ids: list[int] | None = None,
+) -> Path:
+    senders = {item["uin"]: item for item in store.list_senders(conv["key"])}
+    total = _message_total(conv["key"], ts_from, ts_to, sender, ids)
+    span = (
+        f'{time.strftime("%Y-%m-%d %H:%M", time.localtime(ts_from))} ~ '
+        f'{time.strftime("%Y-%m-%d %H:%M", time.localtime(ts_to))}'
+    )
+    lines: list[str] = [
+        f"# {conv.get('name') or conv['key']}",
+        "",
+        f"- 区间：{span}",
+        f"- 消息：{total} 条",
+        f"- 导出：{time.strftime('%Y-%m-%d %H:%M')}",
+        "",
+    ]
+    last_day = ""
+    names: dict[str, str] = {}
+    for index, message in enumerate(
+        _message_source(conv["key"], ts_from, ts_to, sender, ids), 1
+    ):
+        payload = message["payload"]
+        ts = message["ts"]
+        day_key = time.strftime("%Y-%m-%d", time.localtime(ts))
+        if day_key != last_day:
+            lines.extend([f"## {day_key}", ""])
+            last_day = day_key
+        stamp = time.strftime("%H:%M", time.localtime(ts))
+        if _is_system(payload):
+            text = " ".join(_text(block) for block in _block_list(payload)) or payload.get("t", "")
+            lines.extend([f"> {stamp} {text}", ""])
+        else:
+            uin = message["sender"]
+            info = senders.get(uin) or {}
+            name = names.setdefault(uin, info.get("name") or uin)
+            content = "\n\n".join(
+                part for part in (_md_block(block) for block in _block_list(payload)) if part
+            )
+            lines.extend([f"**{name}** {stamp}", "", content or "[空消息]", ""])
+        if progress and (index % 200 == 0 or index == total):
+            progress(index, total)
+    target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return target
+
+
 def _prefix_paths(value: Any, resolve) -> Any:
     """把库里相对媒体目录的路径还原成解析器期望的 output/ 路径，并复制文件。"""
     if isinstance(value, dict):
@@ -427,8 +513,9 @@ def export_pdf(
     sender: str = "",
     progress=None,
     log=None,
+    ids: list[int] | None = None,
 ) -> Path:
-    total = store.count_messages(conv["key"], ts_from, ts_to, sender)
+    total = _message_total(conv["key"], ts_from, ts_to, sender, ids)
     work = Path(tempfile.mkdtemp(prefix="qqhe-pdf-", dir=DATA_DIR))
     media_dir = media_root(conv["key"])
     copied: set[str] = set()
@@ -501,7 +588,7 @@ def export_pdf(
 
         with (output / "chatData.txt").open("w", encoding="utf-8") as handle:
             for index, message in enumerate(
-                store.iter_messages(conv["key"], ts_from, ts_to, sender), 1
+                _message_source(conv["key"], ts_from, ts_to, sender, ids), 1
             ):
                 payload = dict(message["payload"])
                 payload["i"] = message["ts"]

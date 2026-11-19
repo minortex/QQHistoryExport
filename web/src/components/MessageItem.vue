@@ -9,7 +9,16 @@ const props = defineProps<{
   senders: Record<string, Sender>
   selfUin: string
   convKey: string
+  selectable?: boolean
+  selected?: boolean
 }>()
+const emit = defineEmits<{
+  toggle: [{ shift: boolean }]
+}>()
+
+function onToggle(event: MouseEvent) {
+  emit('toggle', { shift: event.shiftKey })
+}
 
 const payload = computed(() => props.msg.payload)
 const blocks = computed<Block[]>(() => blockList(props.msg.payload))
@@ -66,10 +75,20 @@ function openImage(url: string) {
 </script>
 
 <template>
-  <div v-if="isSystem" class="system-line">
-    {{ blocks.map(textOf).join(' ') || payload.t }}
-  </div>
-  <div v-else class="message" :class="{ self: isSelf }">
+  <div class="msg-row" :class="{ selectable, selected }">
+    <label class="msg-check" :class="{ invisible: !selectable }" @click.stop>
+      <input
+        type="checkbox"
+        :checked="selected"
+        :tabindex="selectable ? 0 : -1"
+        @click="onToggle"
+      />
+    </label>
+    <div class="msg-content">
+      <div v-if="isSystem" class="system-line">
+        {{ blocks.map(textOf).join(' ') || payload.t }}
+      </div>
+      <div v-else class="message" :class="{ self: isSelf }">
     <img v-if="avatar" class="avatar" :src="avatar" :alt="displayName" @error="onAvatarError" />
     <div v-else class="avatar avatar-empty">{{ displayName.slice(0, 1) }}</div>
     <div class="body">
@@ -135,6 +154,8 @@ function openImage(url: string) {
 
           <span v-else class="unknown">[{{ block.t || '未支持' }}]</span>
         </template>
+      </div>
+    </div>
       </div>
     </div>
   </div>

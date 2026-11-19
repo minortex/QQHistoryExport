@@ -9,14 +9,15 @@
 # 首次：同步依赖（uv 按 pyproject.toml/uv.lock 管理 .venv）
 uv sync
 
-# 前端构建（产物 web/dist，由后端静态托管）
-cd web && npm install && npm run build && cd ..
-
 # 启动服务（在仓库根目录执行）
 uv run qqhe --open
 # 自定义监听地址
 uv run qqhe --host 127.0.0.1 --port 8000
 ```
+
+`uv run qqhe` 会自动对比 `web/src` 与 `web/dist` 的构建清单，源码有变化时先
+`npm run build` 再启动，因此不需要手动构建；找不到 npm 时会报错退出，
+避免服务端跑旧前端。
 
 `uv run qqhe` 等价于 `uv run python -m app serve`；`uv sync` 会把本项目以可编辑方式装进 `.venv`，
 `qqhe` 命令由 `pyproject.toml` 的 `[project.scripts]` 提供。
@@ -28,7 +29,10 @@ uv run qqhe --host 127.0.0.1 --port 8000
 - 媒体目录（可选；给 `Tencent/MobileQQ` 的上级目录即可自动推导）
 
 保存后点侧栏的 ⟳ 手动扫描会话列表。点击任意会话首次会自动加载（后台作业，SSE 显示进度），
-加载完成后直接按日期、成员浏览。adb 数据源下聊天页有「刷新」用于重新读取；删除操作已移除，
+加载完成后直接按日期、成员浏览：日期只负责定位，不再限制显示范围，导出也与当前显示窗口无关。
+点「选择」进入勾选模式，可跨日期跳转逐条勾选；先勾一条作为起点，跳到别处后点「选中到当前」
+即可选中整段，也支持 Shift 点击连续选择。导出时只导出勾选的消息，未进入选择模式则导出整个会话。
+adb 数据源下聊天页有「刷新」用于重新读取；删除操作已移除，
 本地数据被视为可从数据源重建的缓存。
 
 ### 直接用 adb 在线读取
@@ -93,14 +97,19 @@ data/           运行时数据（已 gitignore）
 | POST | `/api/import` | 首次加载 / 刷新会话（后台作业） |
 | GET | `/api/jobs/{id}` | 作业状态 |
 | GET | `/api/jobs/{id}/events` | SSE 事件流 |
-| GET | `/api/conversations/{key}/messages` | 页码分页 + 日期/成员过滤 |
+| GET | `/api/conversations/{key}/messages` | 游标分页 + 成员过滤 |
+| GET | `/api/conversations/{key}/ids` | 时间区间内的消息 ID（区间勾选） |
 | GET | `/api/conversations/{key}/senders` | 成员列表与条数 |
+| GET | `/api/conversations/{key}/days` | 每日消息数（日期索引） |
+| POST | `/api/save-path` | 弹出系统另存为对话框，返回完整保存路径 |
+| POST | `/api/export` | 按整个会话或勾选的 `ids` 导出，`target` 为保存路径 |
+| GET | `/api/export/{id}` | 导出任务状态 |
 | GET | `/media/{会话}/{路径}` | 媒体文件（StaticFiles，支持 Range） |
 
 ## 当前限制
 
 - 同时只允许一个加载/刷新作业（SQLite 单写者，解析也是 CPU 密集）。
 - 现有解析器会把整张会话表读入内存后排序；百万级会话需要最终改成流式归并。
-- PDF/HTML 导出在 `app/export.py`，PDF 复用 reportlab 排版器；消息浏览走 Web 分页。
+- PDF/HTML/Markdown 导出在 `app/export.py`，PDF 复用 reportlab 排版器；消息浏览走 Web 分页。
 - adb 模式图片按需从设备缓存回源（只覆盖仍存在的缓存文件），语音/视频暂未接入。
 - 桌面入口统一为 `uv run qqhe`（Web UI），旧的 PyQt5 GUI 已移除。

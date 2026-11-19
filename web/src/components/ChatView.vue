@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { ExportTaskView, LibraryConversation, Message, Sender } from '../api'
 import MessageItem from './MessageItem.vue'
+import { useScrollSpy } from '@vizejs/ui/scroll-spy'
 import { dayKey, formatDate, toDateInput, toTimestamp } from '../utils'
 
 const props = defineProps<{
@@ -10,7 +11,6 @@ const props = defineProps<{
   selfUin: string
   canRefresh: boolean
   reloadToken: number
-  exportDir: string
 }>()
 const emit = defineEmits<{
   refresh: [{ from: number; to: number }]
@@ -27,8 +27,7 @@ const LOAD_TARGET = 200
 const MAX_CHUNK_DAYS = 60
 
 const exportOpen = ref(false)
-const exportFormat = ref<'html' | 'pdf'>('html')
-const exportDirInput = ref('')
+const exportFormat = ref<'html' | 'pdf' | 'md'>('html')
 const exportCount = ref(0)
 const exportTask = ref<ExportTaskView | null>(null)
 const exportError = ref('')
@@ -36,47 +35,56 @@ const exportPicking = ref(false)
 let exportTimer: number | undefined
 
 const senders = ref<Record<string, Sender>>({})
-const senderOptions = ref<Sender[]>([])
 const messages = ref<Message[]>([])
 const loading = ref(false)
 const loadingOlder = ref(false)
+const loadingNewer = ref(false)
+const newerPending = ref(false)
+const newerCursorTs = ref(0)
 const hasMore = ref(false)
+const hasNewer = ref(false)
 const covered = ref(false)
 const noMore = ref(false)
 const olderPending = ref(false)
-const pendingAction = ref<'reload' | 'older' | 'day' | null>(null)
+const pendingAction = ref<'reload' | 'older' | 'day' | 'newer' | null>(null)
 const pendingDay = ref('')
 const pendingTs = ref(0)
-const rangeAll = ref(true)
-const dateFrom = ref('')
-const dateTo = ref('')
-const senderFilter = ref('')
 const scroller = ref<HTMLElement | null>(null)
 let ignoreScroll = false
 let requestSeq = 0
 
+// 选择模式：与当前显示窗口解耦，勾选结果按消息 ID 保存
+const selectionMode = ref(false)
+const selectedIds = ref<Set<number>>(new Set())
+const anchor = ref<{ id: number; ts: number } | null>(null)
+const selectingRange = ref(false)
+const selectError = ref('')
+const selectedCount = computed(() => selectedIds.value.size)
+const anchorLabel = computed(() =>
+  anchor.value ? `${formatDate(anchor.value.ts)} ${new Date(anchor.value.ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '',
+)
+watch(selectedCount, (count) => {
+  if (selectionMode.value) exportCount.value = count
+})
+
 const pillVisible = ref(false)
 const pillDate = ref('')
 const pillTs = ref(0)
-const viewBottomTs = ref(0)
 const calendarOpen = ref(false)
 const calendarMonth = ref(new Date())
 const dayCounts = ref<Record<string, number>>({})
 const daysLoading = ref(false)
 const daysCacheKey = ref('')
-const calStart = ref('')
-const calEnd = ref('')
-const calHover = ref('')
 let pillTimer: number | undefined
 
 const railDays = computed(() => {
   const keys = Object.keys(dayCounts.value).sort()
-  const from = toDateInput(bounds().from || props.conv.min_ts || 0)
-  const to = toDateInput(bounds().to || props.conv.max_ts || 0)
+  const from = toDateInput(props.conv.min_ts || 0)
+  const to = toDateInput(props.conv.max_ts || 0)
   const days: { date: string; label: string; count: number }[] = []
   for (const date of keys) {
     if (date < from || date > to) continue
-    const [, month, day] = date.split('-').map(Number)
+    const [, month, day] = date.split("-").map(Number)
     days.push({ date, label: `${month}/${day}`, count: dayCounts.value[date] || 0 })
   }
   return days
@@ -96,8 +104,24 @@ const railGroups = computed(() => {
   return groups
 })
 
-const railActiveDay = computed(() => pillDate.value)
-const railActiveYear = computed(() => pillDate.value.slice(0, 4))
+const spyActiveDay = ref('')
+const spyIds = computed(() => [...new Set(messages.value.map((msg) => `day-${toDateInput(msg.ts)}`))])
+const scrollSpy = useScrollSpy({
+  root: scroller,
+  ids: spyIds,
+  offset: 48,
+  onActiveChange: (id) => {
+    spyActiveDay.value = id ? id.slice(4) : ''
+    if (spyActiveDay.value) {
+      pillDate.value = spyActiveDay.value
+      pillTs.value = toTimestamp(spyActiveDay.value) || pillTs.value
+    }
+  },
+})
+watch(messages, () => nextTick(() => scrollSpy.refresh()), { flush: 'post' })
+
+const railActiveDay = computed(() => spyActiveDay.value || pillDate.value)
+const railActiveYear = computed(() => railActiveDay.value.slice(0, 4))
 const railListRef = ref<HTMLElement | null>(null)
 
 function centerRail(date: string) {
@@ -162,15 +186,18 @@ async function fetchDay(date: string, allowImport: boolean, focusTs = 0) {
   noMore.value = false
   try {
     const resp = await api.messages(props.conv.key, {
-      ts_from: bounds().from,
+      ts_from: 0,
       ts_to: dayEnd - 1,
-      sender: senderFilter.value,
       limit: PAGE,
     })
     if (seq !== requestSeq) return
     messages.value = resp.messages
     hasMore.value = true
-    covered.value = false
+    hasNewer.value = Boolean(resp.hasNewer)
+    loadingNewer.value = false
+    newerPending.value = false
+    newerCursorTs.value = 0
+    covered.value = resp.covered
     await nextTick()
     const el = scroller.value
     const index = focusTs ? messages.value.findIndex((msg) => msg.ts >= focusTs) : 0
@@ -208,6 +235,7 @@ async function fetchDay(date: string, allowImport: boolean, focusTs = 0) {
 async function jumpToTs(ts: number) {
   const date = toDateInput(ts)
   pillDate.value = date
+  pillTs.value = ts
   pillVisible.value = true
   hidePillSoon()
   const index = messages.value.findIndex((msg) => msg.ts >= ts)
@@ -236,58 +264,117 @@ function nowTs(): number {
   return Math.floor(Date.now() / 1000)
 }
 
-function bounds(): { from: number; to: number } {
-  if (rangeAll.value) return { from: 0, to: nowTs() }
-  return {
-    from: toTimestamp(dateFrom.value) || 0,
-    to: toTimestamp(dateTo.value, true) || nowTs(),
+function displayBounds(): { from: number; to: number } {
+  return { from: 0, to: nowTs() }
+}
+
+async function toggleSelectMode() {
+  const el = scroller.value
+  const beforeTop = el?.getBoundingClientRect().top ?? 0
+  const beforeScroll = el?.scrollTop ?? 0
+  selectionMode.value = !selectionMode.value
+  clearSelection()
+  exportOpen.value = false
+  await nextTick()
+  if (el) {
+    const delta = el.getBoundingClientRect().top - beforeTop
+    el.scrollTop = Math.max(0, beforeScroll + delta)
   }
 }
 
-function exportBounds(): { from: number; to: number } {
-  if (rangeAll.value) {
-    return { from: props.conv.min_ts || 0, to: props.conv.max_ts || nowTs() }
+function clearSelection() {
+  selectedIds.value = new Set()
+  anchor.value = null
+  selectError.value = ''
+}
+
+async function addRangeIds(from: number, to: number) {
+  if (selectingRange.value) return
+  selectingRange.value = true
+  selectError.value = ''
+  try {
+    const data = await api.messageIds(props.conv.key, {
+      ts_from: Math.floor(from),
+      ts_to: Math.ceil(to),
+    })
+    const next = new Set(selectedIds.value)
+    for (const id of data.ids) next.add(id)
+    selectedIds.value = next
+  } catch (err) {
+    selectError.value = errorText(err)
+  } finally {
+    selectingRange.value = false
   }
-  return bounds()
 }
 
-function rangeParams(): Record<string, string | number> {
-  const b = bounds()
-  return { ts_from: b.from, ts_to: b.to, sender: senderFilter.value }
+async function toggleSelected(msg: Message, shift = false) {
+  if (shift && anchor.value) {
+    const from = Math.min(anchor.value.ts, msg.ts)
+    const to = Math.max(anchor.value.ts, msg.ts) + 1
+    await addRangeIds(from, to)
+    return
+  }
+  const next = new Set(selectedIds.value)
+  if (next.has(msg.id)) {
+    next.delete(msg.id)
+    if (anchor.value?.id === msg.id) {
+      const fallback = messages.value.find((item) => next.has(item.id))
+      anchor.value = fallback ? { id: fallback.id, ts: fallback.ts } : null
+    }
+  } else {
+    next.add(msg.id)
+    if (!anchor.value) anchor.value = { id: msg.id, ts: msg.ts }
+  }
+  selectedIds.value = next
 }
 
-function syncDisplayRange() {
-  if (!rangeAll.value) return
-  const now = nowTs()
-  dateTo.value = toDateInput(props.conv.max_ts || now)
-  dateFrom.value = toDateInput(props.conv.min_ts || now - 3 * DAY)
+function firstVisibleTs(): number {
+  const el = scroller.value
+  if (!el) return 0
+  const top = el.getBoundingClientRect().top
+  for (const node of el.querySelectorAll<HTMLElement>('[data-ts]')) {
+    if (node.getBoundingClientRect().bottom > top + 2) {
+      return Number(node.dataset.ts) || 0
+    }
+  }
+  return 0
 }
 
-const rangeLabel = computed(() => {
-  if (rangeAll.value) return '全部时间'
-  const fmt = (value: string) => value.replaceAll('-', '/')
-  return `${fmt(dateFrom.value)} – ${fmt(dateTo.value)}`
-})
-
-function pickPreset(days: number) {
-  calendarOpen.value = false
-  quickRange(days)
+function lastVisibleTs(): number {
+  const el = scroller.value
+  if (!el) return 0
+  const bottom = el.getBoundingClientRect().bottom
+  let last = 0
+  for (const node of el.querySelectorAll<HTMLElement>('[data-ts]')) {
+    if (node.getBoundingClientRect().top < bottom - 2) {
+      last = Number(node.dataset.ts) || last
+    } else {
+      break
+    }
+  }
+  return last
 }
 
-function pickAllRange() {
-  calendarOpen.value = false
-  loadAll()
+async function selectToCurrent() {
+  if (!anchor.value) return
+  const first = firstVisibleTs()
+  const last = lastVisibleTs()
+  if (!first || !last) return
+  // 视点在起点之前 → 覆盖到视口第一条；视点在起点之后 → 覆盖到视口最后一条
+  let target: number
+  if (anchor.value.ts > last) target = first
+  else if (anchor.value.ts < first) target = last
+  else target = last
+  await addRangeIds(
+    Math.min(anchor.value.ts, target),
+    Math.max(anchor.value.ts, target) + 1,
+  )
 }
 
-function clearFilters() {
-  calendarOpen.value = false
-  senderFilter.value = ''
-  rangeAll.value = true
-  noMore.value = false
-  syncDisplayRange()
-  void loadLatest()
-  daysCacheKey.value = ''
-  void loadDays()
+function selectLoadedMessages() {
+  const next = new Set(selectedIds.value)
+  for (const msg of messages.value) next.add(msg.id)
+  selectedIds.value = next
 }
 
 const pillLabel = computed(() => {
@@ -312,9 +399,6 @@ interface CalendarCell {
   inMonth: boolean
   today: boolean
   blank: boolean
-  inRange: boolean
-  rangeStart: boolean
-  rangeEnd: boolean
 }
 
 const calendarCells = computed<CalendarCell[]>(() => {
@@ -323,11 +407,6 @@ const calendarCells = computed<CalendarCell[]>(() => {
   const firstOffset = (new Date(year, month, 1).getDay() + 6) % 7
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const today = toDateInput(nowTs())
-  const start = calStart.value
-  const previewEnd = calEnd.value || (start ? calHover.value : '')
-  const lo = start && previewEnd ? (start < previewEnd ? start : previewEnd) : start
-  const hi =
-    start && previewEnd ? (start < previewEnd ? previewEnd : start) : ''
   const cells: CalendarCell[] = []
   const blank = (key: string): CalendarCell => ({
     key,
@@ -337,9 +416,6 @@ const calendarCells = computed<CalendarCell[]>(() => {
     inMonth: false,
     today: false,
     blank: true,
-    inRange: false,
-    rangeStart: false,
-    rangeEnd: false,
   })
   for (let i = 0; i < firstOffset; i++) cells.push(blank(`b${i}`))
   for (let day = 1; day <= daysInMonth; day++) {
@@ -352,9 +428,6 @@ const calendarCells = computed<CalendarCell[]>(() => {
       inMonth: true,
       today: date === today,
       blank: false,
-      inRange: Boolean(lo && hi && date >= lo && date <= hi),
-      rangeStart: Boolean(lo && date === lo),
-      rangeEnd: Boolean(hi && date === hi),
     })
   }
   while (cells.length % 7 !== 0) cells.push(blank(`t${cells.length}`))
@@ -363,7 +436,6 @@ const calendarCells = computed<CalendarCell[]>(() => {
 
 async function loadSenders() {
   const data = await api.senders(props.conv.key)
-  senderOptions.value = data.senders
   const map: Record<string, Sender> = {}
   for (const sender of data.senders) map[sender.uin] = sender
   senders.value = map
@@ -391,10 +463,14 @@ async function loadLatest() {
   olderPending.value = false
   pendingAction.value = null
   try {
-    const resp = await api.messages(props.conv.key, { ...rangeParams(), limit: PAGE })
+    const resp = await api.messages(props.conv.key, { limit: PAGE })
     if (seq !== requestSeq) return
     messages.value = resp.messages
     hasMore.value = resp.hasMore
+    hasNewer.value = false
+    loadingNewer.value = false
+    newerPending.value = false
+    newerCursorTs.value = 0
     covered.value = resp.covered
     await nextTick()
     const el = scroller.value
@@ -406,7 +482,6 @@ async function loadLatest() {
       }, 0)
     }
     pillVisible.value = false
-    syncDisplayRange()
     if (!messages.value.length) {
       if (!resp.covered) requestRangeImport(latestChunk())
       else noMore.value = true
@@ -423,7 +498,7 @@ async function loadLatest() {
 }
 
 function latestChunk(): { from: number; to: number } {
-  const b = bounds()
+  const b = displayBounds()
   return { from: Math.max(b.to - 3 * DAY + 1, b.from), to: b.to }
 }
 
@@ -440,7 +515,6 @@ async function fetchOlderPage(): Promise<boolean> {
   loadingOlder.value = true
   try {
     const resp = await api.messages(props.conv.key, {
-      ...rangeParams(),
       limit: PAGE,
       before_ts: first.ts,
       before_id: first.id,
@@ -484,6 +558,91 @@ async function prefetchOlder() {
   }
 }
 
+function requestNewerImport(from: number, to: number) {
+  if (newerPending.value) return
+  if (from > to) {
+    hasNewer.value = false
+    return
+  }
+  newerPending.value = true
+  pendingAction.value = 'newer'
+  emit('load-range', { from, to })
+}
+
+async function fetchNewerPage(): Promise<boolean> {
+  if (loadingNewer.value || newerPending.value || !hasNewer.value) return false
+  const last = messages.value[messages.value.length - 1]
+  if (!last) return false
+  loadingNewer.value = true
+  try {
+    const maxTs = props.conv.max_ts || nowTs()
+    for (let i = 0; i < 6; i++) {
+      const from = newerCursorTs.value || last.ts
+      const to = Math.min(from + OLDER_CHUNK - 1, maxTs)
+      if (from > maxTs) {
+        hasNewer.value = false
+        return false
+      }
+      const resp = await api.messages(props.conv.key, {
+        limit: PAGE,
+        ts_from: from,
+        ts_to: to,
+        after_ts: last.ts,
+        after_id: last.id,
+      })
+      if (resp.messages.length) {
+        const seen = new Set(messages.value.map((msg) => msg.id))
+        messages.value = [
+          ...messages.value,
+          ...resp.messages.filter((msg) => !seen.has(msg.id)),
+        ]
+        newerCursorTs.value = 0
+        hasNewer.value = Boolean(resp.hasNewer || to < maxTs)
+        covered.value = resp.covered
+        return true
+      }
+      if (!resp.covered) {
+        requestNewerImport(from, to)
+        hasNewer.value = true
+        covered.value = false
+        return false
+      }
+      if (to >= maxTs) {
+        hasNewer.value = false
+        covered.value = true
+        return false
+      }
+      newerCursorTs.value = to + 1
+    }
+    return false
+  } catch (err) {
+    console.error(err)
+    hasNewer.value = false
+    return false
+  } finally {
+    loadingNewer.value = false
+  }
+}
+
+let newerPrefetching = false
+
+async function prefetchNewer() {
+  if (newerPrefetching || loading.value || newerPending.value) return
+  newerPrefetching = true
+  try {
+    for (let i = 0; i < 6; i++) {
+      const el = scroller.value
+      if (!el || !hasNewer.value) return
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (distance >= el.clientHeight * PREFETCH_SCREENS) return
+      if (!(await fetchNewerPage())) return
+      await nextTick()
+    }
+  } finally {
+    newerPrefetching = false
+  }
+}
+
 function olderChunkStart(to: number, floor: number): number {
   const counts = dayCounts.value
   if (!Object.keys(counts).length) return Math.max(to - OLDER_CHUNK + 1, floor)
@@ -501,7 +660,7 @@ function olderChunkStart(to: number, floor: number): number {
 
 function requestOlderImport() {
   if (olderPending.value || loadingOlder.value || noMore.value) return
-  const b = bounds()
+  const b = displayBounds()
   const first = messages.value[0]
   const to = first ? first.ts - 1 : b.to
   const from = olderChunkStart(to, b.from)
@@ -523,10 +682,20 @@ async function loadOlder() {
   }
 }
 
+async function afterNewerImport() {
+  pendingAction.value = null
+  newerPending.value = false
+  loadingNewer.value = false
+  if (!messages.value.length) {
+    await loadLatest()
+    return
+  }
+  await prefetchNewer()
+}
+
 async function afterOlderImport() {
   pendingAction.value = null
   olderPending.value = false
-  syncDisplayRange()
   if (!messages.value.length) {
     await loadLatest()
     return
@@ -537,63 +706,26 @@ async function afterOlderImport() {
   else await prefetchOlder()
 }
 
-function applyRange() {
-  if (!dateFrom.value || !dateTo.value) return
-  if (toTimestamp(dateFrom.value) > toTimestamp(dateTo.value, true)) {
-    ;[dateFrom.value, dateTo.value] = [dateTo.value, dateFrom.value]
-  }
-  rangeAll.value = false
-  noMore.value = false
-  void loadLatest()
-  daysCacheKey.value = ''
-  void loadDays()
-}
-
-function quickRange(days: number) {
-  const anchor = pillDate.value
-    ? toTimestamp(pillDate.value, true)
-    : messages.value[messages.value.length - 1]?.ts || props.conv.max_ts || nowTs()
-  rangeAll.value = false
-  dateTo.value = toDateInput(anchor)
-  dateFrom.value = toDateInput(anchor - days * DAY)
-  noMore.value = false
-  void loadLatest()
-}
-
-function loadAll() {
-  rangeAll.value = true
-  noMore.value = false
-  syncDisplayRange()
-  void loadLatest()
-}
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-async function toggleExport() {
+function toggleExport() {
   exportOpen.value = !exportOpen.value
   if (!exportOpen.value) return
   exportError.value = ''
-  if (!exportDirInput.value) exportDirInput.value = props.exportDir
-  try {
-    exportCount.value = (await api.stats(props.conv.key, rangeParams())).count
-  } catch {
-    exportCount.value = 0
-  }
+  exportCount.value = selectionMode.value ? selectedCount.value : props.conv.msg_count
+  if (exportTask.value?.status !== 'running') exportTask.value = null
 }
 
-async function chooseExportDir() {
-  exportPicking.value = true
-  exportError.value = ''
-  try {
-    const result = await api.pickDir()
-    if (result.path) exportDirInput.value = result.path
-  } catch (err) {
-    exportError.value = errorText(err)
-  } finally {
-    exportPicking.value = false
-  }
+function defaultExportName(): string {
+  const cleaned = (props.conv.name || props.conv.key)
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/^\.+|\.+$/g, '')
+    .trim()
+  const from = toDateInput(props.conv.min_ts || nowTs()).replaceAll('-', '')
+  const to = toDateInput(props.conv.max_ts || nowTs()).replaceAll('-', '')
+  return `${cleaned || 'chat'}_${from}-${to}.${exportFormat.value}`
 }
 
 function stopExportPoll() {
@@ -617,55 +749,52 @@ function pollExport(id: string) {
 
 async function startExport() {
   exportError.value = ''
-  if (!exportDirInput.value.trim()) {
-    exportError.value = '请先选择导出目录'
+  if (selectionMode.value && !selectedCount.value) {
+    exportError.value = '请先勾选要导出的消息'
     return
   }
-  const b = exportBounds()
+  exportPicking.value = true
   try {
-    const task = await api.exportRange({
-      key: props.conv.key,
+    const picked = await api.savePath({
+      filename: defaultExportName(),
       format: exportFormat.value,
-      dir: exportDirInput.value.trim(),
-      tsFrom: b.from,
-      tsTo: b.to,
-      sender: senderFilter.value,
     })
+    if (!picked.path) return
+    const task = selectionMode.value
+      ? await api.exportRange({
+          key: props.conv.key,
+          format: exportFormat.value,
+          target: picked.path,
+          ids: [...selectedIds.value],
+        })
+      : await api.exportRange({
+          key: props.conv.key,
+          format: exportFormat.value,
+          target: picked.path,
+          tsFrom: props.conv.min_ts || 0,
+          tsTo: (props.conv.max_ts || nowTs()) + 1,
+        })
     exportTask.value = task
     pollExport(task.id)
   } catch (err) {
     exportError.value = errorText(err)
+  } finally {
+    exportPicking.value = false
   }
 }
 
 function refreshRange() {
-  const b = bounds()
-  const from = rangeAll.value ? Math.max(b.to - 3 * DAY + 1, 0) : b.from
+  const b = displayBounds()
+  const from = Math.max(b.to - 3 * DAY + 1, 0)
   pendingAction.value = 'reload'
   olderPending.value = true
   emit('refresh', { from, to: b.to })
 }
 
-function currentVisibleDate(): string {
-  const el = scroller.value
-  if (!el) return ''
-  const box = el.getBoundingClientRect()
-  const top = box.top + 8
-  const bottom = box.bottom - 8
-  let first = ''
-  let last = 0
-  for (const node of el.querySelectorAll<HTMLElement>('[data-ts]')) {
-    const rect = node.getBoundingClientRect()
-    const ts = Number(node.dataset.ts)
-    if (!first && rect.bottom > top) {
-      first = toDateInput(ts)
-      pillTs.value = ts
-    }
-    if (rect.top < bottom) last = ts
-    else break
-  }
-  if (last) viewBottomTs.value = last
-  return first
+function syncPill() {
+  if (!spyActiveDay.value) return
+  pillDate.value = spyActiveDay.value
+  pillTs.value = toTimestamp(spyActiveDay.value) || pillTs.value
 }
 
 function hidePillSoon() {
@@ -673,11 +802,6 @@ function hidePillSoon() {
   pillTimer = window.setTimeout(() => {
     if (!calendarOpen.value) pillVisible.value = false
   }, 1400)
-}
-
-function syncPill() {
-  const next = currentVisibleDate()
-  if (next) pillDate.value = next
 }
 
 function onScroll() {
@@ -688,19 +812,26 @@ function onScroll() {
   }
   const el = scroller.value
   if (!el || ignoreScroll) return
-  if (el.scrollTop < el.clientHeight * PREFETCH_SCREENS) void prefetchOlder()
+  if (el.scrollTop < el.clientHeight * PREFETCH_SCREENS) {
+    void prefetchOlder()
+  } else if (
+    el.scrollHeight - el.scrollTop - el.clientHeight <
+    el.clientHeight * PREFETCH_SCREENS
+  ) {
+    void prefetchNewer()
+  }
 }
 
 let daysPromise: Promise<void> | null = null
 
 async function loadDays(): Promise<void> {
-  const key = `${props.conv.key}|${senderFilter.value}`
+  const key = props.conv.key
   if (daysCacheKey.value === key) return
   if (daysPromise) return daysPromise
   daysLoading.value = true
   daysPromise = (async () => {
     try {
-      const data = await api.days(props.conv.key, senderFilter.value)
+      const data = await api.days(props.conv.key)
       const map: Record<string, number> = {}
       for (const item of data.days) map[item.date] = item.count
       dayCounts.value = map
@@ -720,9 +851,6 @@ async function openCalendar() {
   clearTimeout(pillTimer)
   pillVisible.value = true
   syncPill()
-  calStart.value = rangeAll.value ? '' : dateFrom.value
-  calEnd.value = rangeAll.value ? '' : dateTo.value
-  calHover.value = ''
   const base = pillDate.value || toDateInput(props.conv.max_ts || nowTs())
   const [y, m] = base.split('-').map(Number)
   calendarMonth.value = new Date(y, m - 1, 1)
@@ -736,31 +864,7 @@ function toggleCalendar() {
 
 function closeCalendar() {
   calendarOpen.value = false
-  calStart.value = ''
-  calEnd.value = ''
-  calHover.value = ''
   hidePillSoon()
-}
-
-function setCalStart(event: Event) {
-  calStart.value = (event.target as HTMLInputElement).value
-  if (calStart.value && calEnd.value && calEnd.value < calStart.value) calEnd.value = calStart.value
-  if (calStart.value) {
-    const [y, m] = calStart.value.split('-').map(Number)
-    calendarMonth.value = new Date(y, m - 1, 1)
-  }
-}
-
-function setCalEnd(event: Event) {
-  calEnd.value = (event.target as HTMLInputElement).value
-  if (calStart.value && calEnd.value && calEnd.value < calStart.value) {
-    calStart.value = calEnd.value
-  }
-}
-
-function setCalHover(date: string) {
-  if (!calStart.value || calEnd.value) return
-  calHover.value = date
 }
 
 function shiftMonth(delta: number) {
@@ -772,30 +876,20 @@ function shiftMonth(delta: number) {
 }
 
 function pickDay(date: string) {
-  if (!calStart.value || calEnd.value) {
-    calStart.value = date
-    calEnd.value = ''
-    return
-  }
-  if (date < calStart.value) {
-    calEnd.value = calStart.value
-    calStart.value = date
-  } else {
-    calEnd.value = date
-  }
-  applyCalendarRange()
+  calendarOpen.value = false
+  pillDate.value = date
+  pillVisible.value = false
+  void jumpToTs(toTimestamp(date))
 }
 
-function applyCalendarRange() {
-  if (!calStart.value || !calEnd.value) return
-  dateFrom.value = calStart.value
-  dateTo.value = calEnd.value
-  pillDate.value = calEnd.value
+function jumpLatest() {
   calendarOpen.value = false
-  calStart.value = ''
-  calEnd.value = ''
-  calHover.value = ''
-  applyRange()
+  void loadLatest()
+}
+
+function jumpEarliest() {
+  calendarOpen.value = false
+  void jumpToTs(props.conv.min_ts || 0)
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -818,6 +912,7 @@ watch(
     olderPending.value = false
     if (action === 'older') await afterOlderImport()
     else if (action === 'day') await afterDayImport()
+    else if (action === 'newer') await afterNewerImport()
     else await loadLatest()
     daysCacheKey.value = ''
     void loadDays()
@@ -827,13 +922,12 @@ watch(
 watch(
   () => props.conv.key,
   async () => {
-    rangeAll.value = true
-    senderFilter.value = ''
     dayCounts.value = {}
     daysCacheKey.value = ''
-    calStart.value = ''
-    calEnd.value = ''
-    syncDisplayRange()
+    clearSelection()
+    hasNewer.value = false
+    newerPending.value = false
+    newerCursorTs.value = 0
     await loadSenders()
     await loadLatest()
     void loadDays()
@@ -860,15 +954,17 @@ onBeforeUnmount(() => {
       </div>
       <div class="filters">
         <button class="chip-btn range-chip" @click="toggleCalendar">
-          {{ rangeLabel }} <span class="caret">▾</span>
+          {{ pillLabel || '跳转日期' }} <span class="caret">▾</span>
         </button>
-        <select v-model="senderFilter" @change="applyRange">
-          <option value="">全部成员</option>
-          <option v-for="sender in senderOptions" :key="sender.uin" :value="sender.uin">
-            {{ sender.name || sender.uin }} ({{ sender.msg_count }})
-          </option>
-        </select>
         <button v-if="canRefresh" class="chip-btn" @click="refreshRange">刷新</button>
+        <button
+          class="chip-btn"
+          :class="{ 'chip-active': selectionMode }"
+          :title="selectionMode ? '退出选择模式' : '进入选择模式'"
+          @click="toggleSelectMode"
+        >
+          选择
+        </button>
         <button class="chip-btn" @click="toggleExport">导出</button>
 
         <div v-if="exportOpen" class="range-backdrop" @click="exportOpen = false"></div>
@@ -878,24 +974,15 @@ onBeforeUnmount(() => {
             <select id="export-format" v-model="exportFormat">
               <option value="html">HTML（单文件 + 媒体目录）</option>
               <option value="pdf">PDF（reportlab 排版）</option>
+              <option value="md">Markdown（纯文本，无图片）</option>
             </select>
           </div>
-          <div class="export-row">
-            <label for="export-dir">目录</label>
-            <input
-              id="export-dir"
-              v-model="exportDirInput"
-              type="text"
-              spellcheck="false"
-              placeholder="~/QQHistoryExport"
-            />
-            <button class="chip-btn" :disabled="exportPicking" @click="chooseExportDir">
-              {{ exportPicking ? '…' : '选择' }}
-            </button>
-          </div>
           <p class="muted range-tip">
-            将导出当前筛选：{{ rangeLabel }} ·
-            {{ senderFilter ? '所选成员' : '全部成员' }} · {{ exportCount.toLocaleString() }} 条
+            点击「导出」后选择保存位置，文件名可修改。
+          </p>
+          <p class="muted range-tip">
+            <template v-if="selectionMode">将导出已勾选的 {{ exportCount.toLocaleString() }} 条</template>
+            <template v-else>将导出整个会话（{{ exportCount.toLocaleString() }} 条）</template>
           </p>
           <p v-if="exportError" class="export-error">{{ exportError }}</p>
           <div v-if="exportTask" class="export-progress">
@@ -913,38 +1000,17 @@ onBeforeUnmount(() => {
             <span class="range-tip"></span>
             <button
               class="primary"
-              :disabled="!exportCount || exportTask?.status === 'running'"
+              :disabled="!exportCount || exportPicking || exportTask?.status === 'running'"
               @click="startExport"
             >
-              导出
+              {{ exportPicking ? '选择保存位置…' : '导出…' }}
             </button>
           </div>
         </div>
 
         <div v-if="calendarOpen" class="range-backdrop" @click="closeCalendar"></div>
         <div v-if="calendarOpen" class="range-popover" @click.stop>
-          <div class="range-inputs">
-            <label>
-              <span>开始</span>
-              <input type="date" :value="calStart" @input="setCalStart" />
-            </label>
-            <span class="range-dash">–</span>
-            <label>
-              <span>结束</span>
-              <input type="date" :value="calEnd" @input="setCalEnd" />
-            </label>
-          </div>
-
-          <div class="range-presets">
-            <button class="chip-btn" @click="pickPreset(7)">7 天</button>
-            <button class="chip-btn" @click="pickPreset(30)">30 天</button>
-            <button class="chip-btn" @click="pickAllRange">全部</button>
-          </div>
-
-          <div
-            class="range-cal"
-            @mouseleave="calHover = ''"
-          >
+          <div class="range-cal">
             <div class="cal-head">
               <button class="icon-btn" @click="shiftMonth(-1)">‹</button>
               <strong>{{ monthLabel }}</strong>
@@ -958,15 +1024,8 @@ onBeforeUnmount(() => {
                 <button
                   v-if="!cell.blank"
                   class="cal-day"
-                  :class="{
-                    has: cell.count > 0,
-                    today: cell.today,
-                    'in-range': cell.inRange,
-                    'range-start': cell.rangeStart,
-                    'range-end': cell.rangeEnd,
-                  }"
+                  :class="{ has: cell.count > 0, today: cell.today }"
                   :title="cell.count ? `${cell.date} · ${cell.count} 条` : cell.date"
-                  @mouseenter="setCalHover(cell.date)"
                   @click="pickDay(cell.date)"
                 >
                   {{ cell.label }}
@@ -977,23 +1036,41 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="range-actions">
-            <button class="link-btn" @click="clearFilters">清空筛选</button>
+            <button class="link-btn" @click="jumpEarliest">最早</button>
+            <button class="link-btn" @click="jumpLatest">最新</button>
             <span v-if="daysLoading" class="muted range-tip">正在统计日期…</span>
-            <span v-else-if="!calStart" class="muted range-tip">选开始与结束日期</span>
-            <button class="primary" :disabled="!calStart || !calEnd" @click="applyCalendarRange">
-              应用
-            </button>
+            <span v-else class="muted range-tip">点击日期跳转</span>
           </div>
         </div>
       </div>
     </header>
 
+    <div v-if="selectionMode" class="selection-bar">
+      <strong>已选 {{ selectedCount.toLocaleString() }} 条</strong>
+      <button
+        class="chip-btn"
+        :disabled="!anchor || selectingRange"
+        :title="anchorLabel ? `起点 ${anchorLabel}` : '先勾选一条消息作为起点'"
+        @click="selectToCurrent"
+      >
+        选中到当前
+      </button>
+      <button class="chip-btn" @click="selectLoadedMessages">全选当前屏</button>
+      <button class="chip-btn" :disabled="!selectedCount" @click="clearSelection">清空</button>
+      <button class="chip-btn primary" :disabled="!selectedCount" @click="toggleExport">
+        导出所选
+      </button>
+    </div>
+
     <div class="messages-wrap">
+      <div v-if="selectError || selectingRange" class="selection-toast">
+        {{ selectingRange ? '正在取区间…' : selectError }}
+      </div>
       <button
         v-if="pillDate"
         class="date-pill"
         :class="{ visible: pillVisible || calendarOpen }"
-        :title="'选择日期区间'"
+        :title="'跳转日期'"
         @click="openCalendar"
       >
         {{ pillLabel }}
@@ -1015,6 +1092,7 @@ onBeforeUnmount(() => {
           <template v-for="(msg, index) in messages" :key="msg.id">
             <div
               v-if="index === 0 || dayKey(msg.ts) !== dayKey(messages[index - 1].ts)"
+              :id="`day-${toDateInput(msg.ts)}`"
               class="day-sep"
             >
               {{ formatDate(msg.ts) }}
@@ -1025,8 +1103,19 @@ onBeforeUnmount(() => {
               :self-uin="selfUin"
               :conv-key="conv.key"
               :data-ts="msg.ts"
+              :selectable="selectionMode"
+              :selected="selectedIds.has(msg.id)"
+              @toggle="(payload) => toggleSelected(msg, payload.shift)"
             />
           </template>
+          <div v-if="loadingNewer || newerPending" class="load-status">正在加载更新…</div>
+          <button
+            v-else-if="hasNewer && messages.length"
+            class="load-status load-more"
+            @click="prefetchNewer"
+          >
+            继续加载更新
+          </button>
           <p v-if="!messages.length && !loading" class="muted empty">
             {{ olderPending ? '正在加载该区间…' : '该区间没有消息' }}
           </p>

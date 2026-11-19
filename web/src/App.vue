@@ -391,7 +391,6 @@ onMounted(() => {
         :self-uin="config?.selfQQ || ''"
         :can-refresh="Boolean(config?.isAdb) && !convImporting(current.key)"
         :reload-token="reloadTokens[current.key] || 0"
-        :export-dir="config?.exportDir || ''"
         @refresh="refreshCurrent"
         @load-range="loadRange"
         @load-older="loadOlder"

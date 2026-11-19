@@ -137,16 +137,33 @@ def api_export(payload: dict) -> dict:
     if conv is None:
         raise HTTPException(404, "会话尚未导入")
     fmt = str(payload.get("format") or "html").lower()
-    ts_to = int(payload.get("tsTo") or time.time())
-    ts_from = int(payload.get("tsFrom") or 0)
     sender = str(payload.get("sender") or "")
-    if ts_to <= ts_from:
-        raise HTTPException(400, "时间范围不合法")
-    if store.count_messages(key, ts_from, ts_to, sender) == 0:
-        raise HTTPException(400, "该区间没有可导出的消息")
-    directory = str(payload.get("dir") or EXPORT_DIR)
+    ids: list[int] | None = None
+    if "ids" in payload:
+        raw_ids = payload.get("ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise HTTPException(400, "没有选择要导出的消息")
+        try:
+            ids = sorted({int(item) for item in raw_ids})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "消息 ID 不合法") from exc
+        span = store.selection_span(key, ids)
+        if span is None:
+            raise HTTPException(400, "所选消息不存在")
+        ts_from = span["min_ts"]
+        ts_to = max(span["max_ts"] + 1, ts_from + 1)
+    else:
+        ts_to = int(payload.get("tsTo") or time.time())
+        ts_from = int(payload.get("tsFrom") or 0)
+        if ts_to <= ts_from:
+            raise HTTPException(400, "时间范围不合法")
+        if store.count_messages(key, ts_from, ts_to, sender) == 0:
+            raise HTTPException(400, "该区间没有可导出的消息")
+    directory = str(payload.get("target") or "")
+    if not directory:
+        raise HTTPException(400, "缺少保存路径")
     try:
-        task = exports.start(conv, fmt, directory, ts_from, ts_to, sender)
+        task = exports.start(conv, fmt, directory, ts_from, ts_to, sender, ids)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
@@ -162,12 +179,20 @@ def api_export_status(task_id: str) -> dict:
     return task.to_json()
 
 
-@app.post("/api/pick-dir")
-def api_pick_dir() -> dict:
+@app.post("/api/save-path")
+def api_save_path(payload: dict) -> dict:
+    fmt = str(payload.get("format") or "html").lower()
+    suffixes = {"html": ".html", "pdf": ".pdf", "md": ".md"}
+    if fmt not in suffixes:
+        raise HTTPException(400, "不支持的导出格式")
+    suffix = suffixes[fmt]
+    name = Path(str(payload.get("filename") or f"export{suffix}")).name
+    if not name.lower().endswith(suffix):
+        name += suffix
     try:
-        path = picker.pick_directory()
+        path = picker.save_file(name, suffix, str(EXPORT_DIR))
     except RuntimeError as exc:
-        raise HTTPException(501, f"无法弹出目录选择框，请手动填写路径：{exc}") from exc
+        raise HTTPException(501, f"无法打开保存对话框：{exc}") from exc
     return {"path": path or ""}
 
 
@@ -263,6 +288,19 @@ def api_days(
     }
 
 
+@app.get("/api/conversations/{conv_key}/ids")
+def api_message_ids(
+    conv_key: str,
+    ts_from: int = 0,
+    ts_to: int = 0,
+    sender: str = "",
+) -> dict:
+    """返回时间区间内的消息 ID，供前端做区间勾选。"""
+    conv = _require_conversation(conv_key)
+    ts_to = ts_to or (int(conv["max_ts"]) + 1)
+    return {"ids": store.message_ids(conv_key, ts_from, ts_to, sender)}
+
+
 @app.get("/api/conversations/{conv_key}/messages")
 def api_messages(
     conv_key: str,
@@ -271,10 +309,30 @@ def api_messages(
     sender: str = "",
     before_ts: int = 0,
     before_id: int = 0,
+    after_ts: int = 0,
+    after_id: int = 0,
     limit: int = Query(100, ge=1, le=500),
 ) -> dict:
-    _require_conversation(conv_key)
+    conv = _require_conversation(conv_key)
     ts_to = ts_to or int(time.time())
+    if after_ts or after_id:
+        messages, has_newer = store.fetch_messages_after(
+            conv_key,
+            ts_from,
+            ts_to,
+            sender,
+            limit=limit,
+            after_ts=after_ts,
+            after_id=after_id,
+        )
+        return {
+            "messages": messages,
+            "hasMore": False,
+            "hasNewer": has_newer,
+            "covered": store.range_covered(conv_key, ts_from, ts_to),
+            "tsFrom": ts_from,
+            "tsTo": ts_to,
+        }
     messages, has_more = store.fetch_messages(
         conv_key,
         ts_from,
@@ -287,6 +345,7 @@ def api_messages(
     return {
         "messages": messages,
         "hasMore": has_more,
+        "hasNewer": int(conv["max_ts"] or 0) > ts_to,
         "covered": store.range_covered(conv_key, ts_from, ts_to),
         "tsFrom": ts_from,
         "tsTo": ts_to,

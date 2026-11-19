@@ -24,6 +24,16 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
     args = parser.parse_args()
 
+    from app.web_build import ensure_web_dist
+
+    try:
+        ensure_web_dist()
+    except Exception as exc:
+        import sys
+
+        print(f"错误：{exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
     if args.open:
         threading.Timer(
             1.0, lambda: webbrowser.open(f"http://{args.host}:{args.port}/")

@@ -263,6 +263,42 @@ def message_days(
     return [{"date": r["day"], "count": int(r["c"])} for r in rows]
 
 
+def fetch_messages_after(
+    conv_key: str,
+    ts_from: int,
+    ts_to: int,
+    sender: str = "",
+    limit: int = 100,
+    after_ts: int = 0,
+    after_id: int = 0,
+) -> tuple[list[dict], bool]:
+    """取当前窗口之后的一批消息，按时间升序；has_more 表示是否还有更新。"""
+    where, args = _where(conv_key, ts_from, ts_to, sender)
+    where += " and (ts > ? or (ts = ? and id > ?))"
+    args.extend([after_ts, after_ts, after_id])
+    sql = (
+        "select id, ts, sender, type, payload "
+        + where
+        + " order by ts asc, id asc limit ?"
+    )
+    args.append(limit + 1)
+    with connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    messages = [
+        {
+            "id": r["id"],
+            "ts": r["ts"],
+            "sender": r["sender"],
+            "type": r["type"],
+            "payload": json.loads(r["payload"]),
+        }
+        for r in rows
+    ]
+    return messages, has_more
+
+
 def fetch_messages(
     conv_key: str,
     ts_from: int,
@@ -329,3 +365,66 @@ def list_senders(conv_key: str) -> list[dict]:
             (conv_key,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def message_ids(conv_key: str, ts_from: int, ts_to: int, sender: str = "") -> list[int]:
+    """返回区间内全部消息 ID，供前端做“按区间勾选”。"""
+    where, args = _where(conv_key, ts_from, ts_to, sender)
+    sql = "select id " + where + " order by ts asc, id asc"
+    with connect() as conn:
+        return [int(row["id"]) for row in conn.execute(sql, args)]
+
+
+def _id_chunks(ids: list[int], size: int = 500):
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
+
+
+def selection_span(conv_key: str, ids: list[int]) -> dict | None:
+    """统计选中消息的数量与时间范围；没有任何有效 ID 时返回 None。"""
+    unique = sorted({int(item) for item in ids})
+    if not unique:
+        return None
+    count = 0
+    min_ts: int | None = None
+    max_ts: int | None = None
+    with connect() as conn:
+        for chunk in _id_chunks(unique):
+            marks = ",".join("?" * len(chunk))
+            row = conn.execute(
+                f"select count(*) as c, min(ts) as lo, max(ts) as hi from message "
+                f"where conv_key=? and id in ({marks})",
+                [conv_key, *chunk],
+            ).fetchone()
+            count += int(row["c"])
+            if row["lo"] is not None:
+                min_ts = int(row["lo"]) if min_ts is None else min(min_ts, int(row["lo"]))
+                max_ts = int(row["hi"]) if max_ts is None else max(max_ts, int(row["hi"]))
+    if not count or min_ts is None or max_ts is None:
+        return None
+    return {"count": count, "min_ts": min_ts, "max_ts": max_ts}
+
+
+def iter_messages_by_ids(conv_key: str, ids: list[int]):
+    """按时间升序返回选中的消息（去重，可跨区间）。"""
+    unique = sorted({int(item) for item in ids})
+    rows: list[sqlite3.Row] = []
+    with connect() as conn:
+        for chunk in _id_chunks(unique):
+            marks = ",".join("?" * len(chunk))
+            rows.extend(
+                conn.execute(
+                    f"select id, ts, sender, type, payload from message "
+                    f"where conv_key=? and id in ({marks})",
+                    [conv_key, *chunk],
+                ).fetchall()
+            )
+    rows.sort(key=lambda row: (int(row["ts"]), int(row["id"])))
+    for row in rows:
+        yield {
+            "id": int(row["id"]),
+            "ts": int(row["ts"]),
+            "sender": row["sender"],
+            "type": row["type"],
+            "payload": json.loads(row["payload"]),
+        }
