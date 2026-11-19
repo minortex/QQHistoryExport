@@ -95,19 +95,35 @@ def _sniff_extension(data: bytes) -> str:
     return {"jpeg": "jpg", "mpo": "jpg"}.get(fmt, fmt or "bin")
 
 
+def _direct_variants(url: str):
+    """直链按 spec 逐个降级：原链接 → spec=0(原图) → spec=198(服务器缩略图)。"""
+    yield url
+    if "spec=" in url:
+        for spec in ("0", "198"):
+            yield re.sub(r"spec=\d+", f"spec={spec}", url)
+    elif "?" in url:
+        yield url + "&spec=198"
+
+
 def _fetch_direct(url: str) -> bytes:
-    """请求 QQ 下发的图片直链（PicRec.bigMsgUrl）。"""
+    """请求 QQ 下发的图片直链（PicRec.bigMsgUrl），同一 fileid/rkey 换尺寸重试。"""
     if not url:
         return b""
-    if url.startswith("/"):
-        url = "https://gchat.qpic.cn" + url
-    try:
-        response = requests.get(url, headers={"User-Agent": HTTP_UA}, timeout=HTTP_TIMEOUT)
-    except requests.RequestException:
-        return b""
-    if response.status_code != 200:
-        return b""
-    return response.content
+    hosts = ("" ,) if not url.startswith("/") else ("https://gchat.qpic.cn", "https://c2cpicdw.qpic.cn")
+    for base in hosts:
+        for candidate in _direct_variants(url):
+            try:
+                response = requests.get(
+                    base + candidate, headers={"User-Agent": HTTP_UA}, timeout=HTTP_TIMEOUT
+                )
+            except requests.RequestException:
+                continue
+            if response.status_code != 200:
+                continue
+            if not response.headers.get("content-type", "").startswith("image/"):
+                continue
+            return response.content
+    return b""
 
 
 def _fetch_http(md5: str, kind: str) -> bytes:
