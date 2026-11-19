@@ -39,7 +39,7 @@
 - 图片自动猜测类型并md5防重复
 - 支持java序列化类型消息解析
 - 支持extStr解析，获取了**消息的更多属性**
-- 有功能丰富的**GUI界面**
+- 内置**Web UI**，浏览器里完成解析与导出
 
 PDF生成：
 
@@ -52,11 +52,11 @@ PDF生成：
 
 效果图：
 
-![image-20230726135050874](README/image-20230726135050874.png)
+![image-20230726135050874](README/image-20230726135050874.webp)
 
 
 
-![image-20230725211104660](README/image-20230725211104660.png)
+![image-20230725211104660](README/image-20230725211104660.webp)
 
 
 
@@ -130,7 +130,7 @@ QQNT的特征是，db文件夹下QQ号.db大小很小（小于10mb），存在db
 
 这是我一个八万条聊天记录导出的错误统计
 
-<img src="README/image-20230727132214003.png" alt="image-20230727132214003" style="zoom:50%;" />
+<img src="README/image-20230727132214003.webp" alt="image-20230727132214003" style="zoom:50%;" />
 
 <u>5.不会用怎么办？</u>
 
@@ -140,9 +140,26 @@ QQNT的特征是，db文件夹下QQ号.db大小很小（小于10mb），存在db
 
 <u>6.消息开始有一段这个？</u>
 
-<img src="README/image-20230727152652992.png" alt="image-20230727152652992" style="zoom: 50%;" />
+<img src="README/image-20230727152652992.webp" alt="image-20230727152652992" style="zoom: 50%;" />
 
 怎么会逝？我也不知道，x逊的QQ数据库就是屎山！！！！！我这边只有20来条，下面的就是正常消息
+
+<u>7.运行源码时 ffmpeg / SILK 解码器从哪来？</u>
+
+仓库不再附带 `ffmpeg.exe`。按 `FFMPEG_BINARY` 环境变量 → `PATH` 里的 `ffmpeg` → `imageio-ffmpeg` 包 → `lib/` 下旧二进制的顺序查找；SILK 语音优先用 `pilk` 包解码，没有时回退到 `SILK_DECODER_BINARY`、`PATH` 里的 `silk_v3_decoder` 或 `lib/silk-decoder/silk_v3_decoder.exe`。`uv sync` 已经装好 `imageio-ffmpeg` 和非 Windows 平台的 `pilk`。
+
+## Web 后台服务的数据位置
+
+`uv run qqhe` 启动的后台服务把可重建的数据和持久配置分开存放，首次启动会自动迁移旧版 `data/` 下的 `library.sqlite3` 与 `config.json`：
+
+| 内容 | 默认位置 | 环境变量 |
+|---|---|---|
+| 消息库、媒体、原始窗口、缓存 | `/tmp/qqhe-history-export/` | `QQHE_DATA_DIR` |
+| 配置（含密钥，0600） | `~/.config/qqhe/config.json` | `QQHE_CONFIG_DIR` |
+| 导出产物（PDF/HTML/媒体） | `~/QQHistoryExport/` | `QQHE_EXPORT_DIR` |
+| 缓存预算（raw + media_cache + avatars） | 500 MB | `QQHE_CACHE_LIMIT_MB` |
+
+缓存超预算时按文件修改时间淘汰最旧的；每次导入完成后只保留该会话最近 2 个原始窗口。
 
 ## 上报问题
 

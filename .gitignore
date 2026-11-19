@@ -928,3 +928,8 @@ MigrationBackup/
 
 # End of https://www.gitignore.io/api/vim,node,xcode,linux,macos,windows,eclipse,webstorm,notepadpp,visualstudio,jetbrains+all,androidstudio,visualstudiocode
 
+
+# Web 后端运行时数据与前端构建产物
+/data/
+/web/node_modules/
+/web/dist/

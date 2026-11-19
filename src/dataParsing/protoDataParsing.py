@@ -4,16 +4,17 @@ import sys
 import re
 import traceback
 import json
-import imghdr
 import shutil
 import binascii
-import subprocess
 
 # Editor: NoahShen admin@noahshen.top
 # Date: 2023/9/14
 # Reason: 移除blackboxprotobuf
 
+from PIL import Image
+
 from src.errcode.errcode import ErrCode
+from src import mediaTools
 from .textParsing import textParsing
 
 sys.path.append("...")
@@ -83,24 +84,9 @@ class protoDataParsing():
 
     def video_thumb(self, input_path, output_path):
         try:
-            # 使用ffmpeg获取视频的第一帧并生成缩略图
-            if os.path.exists(output_path):
-                os.remove(output_path)
-
-            ffmpeg_cmd = [
-                'lib/ffmpeg-lgpl/ffmpeg.exe',
-                '-i', input_path,
-                '-ss', '00:00:00.000',  # 指定获取的时间点，这里取第一毫秒作为第一帧
-                '-vframes', '1',  # 限制只取一帧
-                output_path
-            ]
-            subprocess.run(ffmpeg_cmd, check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            if os.path.exists(output_path):
-                return output_path
-        except subprocess.TimeoutExpired:
-            return ""
-        except subprocess.CalledProcessError as e:
+            return mediaTools.video_thumbnail(input_path, output_path)
+        except mediaTools.MediaToolError:
+            self.ERRCODE.parse_err("VIDEO_THUMB_ERROR", [input_path, traceback.format_exc()])
             return ""
 
 
@@ -152,6 +138,11 @@ class protoDataParsing():
 
                 # 判断文件是否存在
                 if not os.path.exists(relpath):
+                    if self.configs.get("lazyImages"):
+                        # 本地没有文件时只记录引用，由 Web 端按需回源
+                        msgOutData["c"]["path"] = "lazy:" + doc.md5
+                        msgOutData["c"]["name"] = doc.md5
+                        return msgOutData
                     msgOutData = {"t": "err", "c": {"text": "[图片]", "type": "media"}}
                     self.ERRCODE.parse_err("IMG_NOT_EXIST", [relpath])
                     return msgOutData
@@ -168,7 +159,14 @@ class protoDataParsing():
                     return msgOutData
 
                 # 确定图片类型并添加后缀名
-                img_type = imghdr.what(relpath)
+                try:
+                    with Image.open(relpath) as img:
+                        img_type = img.format.lower() if img.format else None
+                except OSError:
+                    img_type = None
+                # JPEG 变体（MPO/JFIF）统一按 jpeg 处理
+                if img_type in ("mpo", "jfif"):
+                    img_type = "jpeg"
                 if img_type is None:
                     msgOutData = {"t": "err", "c": {"text": "[图片]", "type": "media"}}
                     self.ERRCODE.parse_err("IMG_UNKNOWN_TYPE_ERROR", [imgPath])
@@ -277,40 +275,35 @@ class protoDataParsing():
                 msgOutData = {"t": "err", "c": {"text": "[语音]", "type": "media"}}
                 return msgOutData
 
-            cmd_list = []
             new_filename = f'{self.voice_num}.mp3'
             new_file_path = os.path.join('output', 'voices', new_filename)
             self.voice_num += 1
-            temp_path = "output\\temp\\voice.pcm"
+            temp_path = os.path.join('output', 'temp', 'voice.pcm')
 
             def starts_with_bytes(bytesA, bytesB):
                 if len(bytesA) < len(bytesB):
                     return False
                 return bytesA[:len(bytesB)] == bytesB
 
-            if starts_with_bytes(file_header, bytes.fromhex("02232153494c4b5f")):
-                # SILK_V3
-
-
-                cmd_list.append(f"lib\\silk-decoder\\silk_v3_decoder.exe {relpath} {temp_path} -Fs_API 44100")
-                cmd_list.append(f"lib\\ffmpeg-lgpl\\ffmpeg.exe -y -f s16le -ar 44100 -ac 1 -i {temp_path} {new_file_path}")
-
-            elif starts_with_bytes(file_header, bytes.fromhex("2321414d52")):
-                # AMR
-                cmd_list.append(f"lib\\ffmpeg-lgpl\\ffmpeg.exe -i {relpath} {new_file_path}")
-            else:
+            is_silk = starts_with_bytes(file_header, bytes.fromhex("02232153494c4b5f"))
+            is_amr = starts_with_bytes(file_header, bytes.fromhex("2321414d52"))
+            if not is_silk and not is_amr:
                 self.ERRCODE.parse_err("VOICE_UNKNOWN_FILEHEADER", [file_path, binascii.hexlify(file_header).decode('utf-8')])
                 msgOutData = {"t": "err", "c": {"text": "[语音]", "type": "media"}}
                 return msgOutData
 
             try:
-                for cmd in cmd_list:
-                    # print(cmd)
-                    subprocess.run(cmd, check=True, timeout=3, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except:
+                if is_silk:
+                    # SILK_V3
+                    mediaTools.silk_to_pcm(relpath, temp_path)
+                    mediaTools.pcm_to_mp3(temp_path, new_file_path)
+                else:
+                    # AMR
+                    mediaTools.audio_to_mp3(relpath, new_file_path)
+            except mediaTools.MediaToolError as e:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
-                self.ERRCODE.parse_err("VOICE_CONVERT_ERROR", [relpath, 1])
+                self.ERRCODE.parse_err("VOICE_CONVERT_ERROR", [relpath, str(e)])
                 msgOutData = {"t": "err", "c": {"text": "[语音]", "type": "media"}}
                 return msgOutData
 

@@ -27,14 +27,12 @@ class QQParse:
         self.configs = configs
         self.key = None
 
-        self.configs = configs
-
         self.DBcursor1 = None
         self.DBcursor2 = None
 
-        self.createOutputFolder()
         self.ERRCODE = errcode_obj
         self.ERRCODE.parse_start()
+        self.createOutputFolder()
 
         self.textParsing = textParsing(self.ERRCODE, self.configs)
         self.unserializedDataParsing = unserializedDataParsing(self.ERRCODE, self.textParsing, self.configs)
@@ -159,7 +157,7 @@ class QQParse:
                 self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_ERR, info)
                 return False
             else:
-                cmd = f"select msgtype,senderuin,msgData,time,extStr from mr_friend_{targetQQmd5}_New order by time"
+                cmd = f"select msgtype,senderuin,msgData,time,extStr from mr_friend_{targetQQmd5}_New"
                 cmd_2 = f"SELECT COUNT(*) FROM mr_friend_{targetQQmd5}_New"
 
         elif mode == "group":
@@ -168,11 +166,18 @@ class QQParse:
                 self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_ERR, info)
                 return False
             else:
-                cmd = f"select msgtype,senderuin,msgData,time,extStr from mr_troop_{targetQQmd5}_New order by time"
+                cmd = f"select msgtype,senderuin,msgData,time,extStr from mr_troop_{targetQQmd5}_New"
                 cmd_2 = f"SELECT COUNT(*) FROM mr_troop_{targetQQmd5}_New"
 
 
         # print(cmd)
+
+        time_from = self.configs.get("timeFrom")
+        time_to = self.configs.get("timeTo")
+        if time_from is not None and time_to is not None:
+            where = f" where time >= {int(time_from)} and time <= {int(time_to)}"
+            cmd += where
+            cmd_2 += where
 
         # if self.cmdpre != "":
         #     cmd = self.cmdpre
@@ -197,7 +202,7 @@ class QQParse:
 
 
         cursors, err_info = self.fill_cursors(cmd)
-        if count_cursors == []:
+        if cursors == []:
             info = f"数据库查询出错！sqlite3.execute error {err_info}"
             if "no such table" in info:
                 info += ", 可能没有聊天信息，数据库里没有此table"
@@ -207,50 +212,73 @@ class QQParse:
         info = f"""数据库解析初始化成功，共计{total_num}条消息，开始解析……"""
         self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_INFO, info)
 
+        # 数据库尾部损坏时迭代会中途抛 DatabaseError，这里先取完能取到的行，
+        # 再在内存里按时间排序（表里的消息量级只有几千条，内存可承受），
+        # 避免一条坏页导致整次导出作废
+        rows = []
+        db_error = None
         for cs in cursors:
-            for row in cs:
-                persent = int((current_num + 1) / total_num * 100)
-                if persent % 5 == 0 and persent != last_persent:
-                    last_persent = persent
-                    info = f"解析进度：{persent}%, {current_num + 1}/{total_num}"
-                    self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_INFO, info)
-                current_num += 1
-
-                if not self.ERRCODE.parse_quote_state():
-                    return False
-
-                msgType = row[0]
-                senderQQ = self.decrypt(row[1])
-                if senderQQ not in self.senderUins:
-                    self.senderUins.append(senderQQ)
-                msgData = self.decrypt(row[2])
-                ltime = row[3]
-                extStr = self.decrypt(row[4])
+            while True:
                 try:
-                    msgOutData = self.proMsg(msgType, msgData, extStr)
+                    row = cs.fetchone()
+                except sqlite3.DatabaseError as e:
+                    db_error = e
+                    break
+                if row is None:
+                    break
+                rows.append(row)
+            if db_error is not None:
+                break
+        if db_error is not None:
+            self.ERRCODE.parse_err("DB_CORRUPT", [str(db_error), len(rows), total_num])
+            info = f"数据库不完整，从损坏处之后的消息无法读取。能读到的 {len(rows)} 条会继续导出。"
+            self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_WARN, info)
+
+        rows.sort(key=lambda row: row[3])
+
+        for row in rows:
+            persent = int((current_num + 1) / total_num * 100)
+            if persent % 5 == 0 and persent != last_persent:
+                last_persent = persent
+                info = f"解析进度：{persent}%, {current_num + 1}/{total_num}"
+                self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_INFO, info)
+            current_num += 1
+
+            if not self.ERRCODE.parse_quote_state():
+                return False
+
+            msgType = row[0]
+            senderQQ = self.decrypt(row[1])
+            if senderQQ not in self.senderUins:
+                self.senderUins.append(senderQQ)
+            msgData = self.decrypt(row[2])
+            ltime = row[3]
+            extStr = self.decrypt(row[4])
+            try:
+                msgOutData = self.proMsg(msgType, msgData, extStr)
+            except Exception as e:
+                msgOutDataText = ""
+                try:
+                    # 防止msgOutData没有拿到而造成的问题
+                    msgOutDataText = str(msgOutData)
+                except:
+                    pass
+                error_info = traceback.format_exc()
+                self.ERRCODE.parse_err("UNEXPECTED_ERR", [e, error_info,msgOutDataText, msgType, msgData])
+                print(error_info)
+                msgOutData = None
+
+            if msgOutData != None and msgOutData != {}:
+                try:
+                    msgOutData["s"] = senderQQ
+                    msgOutData["i"] = ltime
+                    json_str = json.dumps(msgOutData)
+                    self.outputFile.write(json_str + '\n')
                 except Exception as e:
-                    msgOutDataText = ""
-                    try:
-                        # 防止msgOutData没有拿到而造成的问题
-                        msgOutDataText = str(msgOutData)
-                    except:
-                        pass
                     error_info = traceback.format_exc()
-                    self.ERRCODE.parse_err("UNEXPECTED_ERR", [e, error_info,msgOutDataText, msgType, msgData])
+                    self.ERRCODE.parse_err("UNEXPECTED_ERR", [e, error_info, msgOutData, msgType, msgData])
                     print(error_info)
                     msgOutData = None
-
-                if msgOutData != None and msgOutData != {}:
-                    try:
-                        msgOutData["s"] = senderQQ
-                        msgOutData["i"] = ltime
-                        json_str = json.dumps(msgOutData)
-                        self.outputFile.write(json_str + '\n')
-                    except Exception as e:
-                        error_info = traceback.format_exc()
-                        self.ERRCODE.parse_err("UNEXPECTED_ERR", [e, error_info, msgOutData, msgType, msgData])
-                        print(error_info)
-                        msgOutData = None
         self.outputFile.close()
 
         # print(self.groupMembers[targetQQ])

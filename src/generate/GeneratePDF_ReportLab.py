@@ -2,10 +2,10 @@ from reportlab.lib.pagesizes import A4, A5
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 
-from PIL import Image
-import sqlite3
+from PIL import Image, ImageFont
 import re
 import os
 import configparser
@@ -16,6 +16,7 @@ import shutil
 import emoji
 import traceback
 
+from src import emojiRender, fontResolver
 from src.errcode import errcode
 
 
@@ -34,9 +35,30 @@ class DrawingQuery:
         self.paths = paths
         self.style = style
         self.log = log
+        self._emoji_warned = False
 
-        # 连接数据库
-        self.conn = sqlite3.connect(paths["fontInfoPath"])
+        # 字宽直接由字体渲染度量计算：与旧 _aspect_ratio.db 的 getsize 结果一致，
+        # 只是按字符惰性计算并缓存，省掉 37 MB 的预生成数据库。
+        fontPath = paths.get("fontPath")
+        fontIndex = paths.get("fontIndex", 0)
+        self._font = (
+            ImageFont.truetype(fontPath, 16, index=fontIndex) if fontPath else None
+        )
+        self._ratio_cache: dict[str, float] = {}
+        fallback = self._bbox_ratio("\U0010FFFE") if self._font else None
+        self._fallback_ratio = fallback if fallback is not None else 1.0
+
+    def _bbox_ratio(self, char):
+        """返回字符渲染 bbox 的宽高比，无法渲染时返回 None。"""
+        if self._font is None:
+            return None
+        try:
+            bbox = self._font.getbbox(char)
+        except Exception:
+            return None
+        if not bbox or bbox[3] == 0:
+            return None
+        return bbox[2] / bbox[3]
 
     def query_char_width(self, char):
         """查询字体宽度
@@ -44,17 +66,13 @@ class DrawingQuery:
         :param char: 字符
         :return: 宽度
         """
-        c = self.conn.cursor()
-        c.execute(f"SELECT aspect_ratio FROM font_metrics WHERE unicode={ord(char)}")
-        result = c.fetchone()
-
-        if result:
-            aspect_ratio = result[0]
-            # 计算宽度并返回结果
-            width = round(aspect_ratio * self.style["textHeight"])
-            return width
-
-        return None
+        aspect_ratio = self._ratio_cache.get(char)
+        if aspect_ratio is None:
+            aspect_ratio = self._bbox_ratio(char)
+            if aspect_ratio is None:
+                aspect_ratio = self._fallback_ratio
+            self._ratio_cache[char] = aspect_ratio
+        return round(aspect_ratio * self.style["textHeight"])
 
     def resize_image(self, img_width, img_height, max_width, max_height):
         """计算图片缩放后的大小
@@ -110,50 +128,19 @@ class DrawingQuery:
                 return True, None
         return False, None
 
-    def unicode_emoji_to_filename(self, emoji_unicode):
-        """将Unicode emoji转为字符串文件名表示
-
-        :param emoji_unicode: 字符
-        :return: 文件名
-        """
-        fileName = "emoji_u"
-        for char in emoji_unicode:
-            # 获取字符的 Unicode 码并转化为十六进制字符串
-            hex_code = hex(ord(char))[2:]  # 去掉 '0x' 前缀
-            # 补齐到四位十六进制数
-            # hex_code = hex_code.zfill(4)
-            if fileName == "emoji_u":
-                fileName += hex_code
-            else:
-                fileName += f"_{hex_code}"
-        fileName += ".png"
-        return fileName
-
     def get_unicode_file(self, emoji_unicode):
-        """提取emoji文件（彩色emoji）
+        """将 emoji 光栅化为 PNG（复用系统彩色 emoji 字体）
 
         :param emoji_unicode: emoji字符
-        :return:
+        :return: PNG 路径，渲染失败时为 None
         """
-        fileName = self.unicode_emoji_to_filename(emoji_unicode)
-        filePath = f"output/temp/{fileName}"
-        #print(filePath, emoji_unicode)
-
-        with sqlite3.connect(self.paths["emojiFontDBPath"]) as conn:
-            cursor = conn.execute('''SELECT start_offset, end_offset FROM files_info
-                                     WHERE file_name = ?''', (fileName,))
-            row = cursor.fetchone()
-            if not row:
-                self.log(f"警告：一个unicode emoji未找到：{fileName}")
-                return
-            start_offset, end_offset = row
-
-        # 从大文件中还原小文件
-        with open(self.paths["emojiFontPath"], "rb") as merged_file, \
-                open(filePath, "wb") as output_file:
-            merged_file.seek(start_offset)
-            output_file.write(merged_file.read(end_offset - start_offset))
-
+        filePath = emojiRender.emoji_png(emoji_unicode)
+        if filePath is None and not self._emoji_warned:
+            self._emoji_warned = True
+            if emojiRender.font_candidates():
+                self.log("⚠️ 系统 emoji 字体缺少部分表情，已跳过无法渲染的 emoji")
+            else:
+                self.log("⚠️ 未找到系统彩色 emoji 字体，emoji 将被跳过")
         return filePath
 
 
@@ -177,9 +164,17 @@ class PdfDraw:
         self.style = style
         self.log = log
 
-        pdfmetrics.registerFont(TTFont(self.style["fontName"], self.paths["fontPath"]))
-        if self.style["ifUseColorEmoji"] == "false":
-            pdfmetrics.registerFont(TTFont(self.style["EmojiFontName"], self.paths["emojiFontPath"]))
+        if self.paths.get("fontPath"):
+            pdfmetrics.registerFont(
+                TTFont(
+                    self.style["fontName"],
+                    self.paths["fontPath"],
+                    subfontIndex=self.paths.get("fontIndex", 0),
+                )
+            )
+        else:
+            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+            self.style["fontName"] = "STSong-Light"
         self.pdf_canvas = canvas.Canvas("output/chatData.pdf", pagesize=self.style["pageSize"])
         self.drawPageFooter(1)
 
@@ -304,14 +299,12 @@ class PdfDraw:
         """
         x = self.style["pageWidth"] * c + x - 10
 
-        if self.style["ifUseColorEmoji"] == "false":
-            self.pdf_canvas.setFont(self.paths["emojiFontName"], self.style["textHeight"])
-            self.pdf_canvas.drawString(x, y, char)
-        elif self.style["ifUseColorEmoji"] == "true":
-            path = self.drawingQuery.get_unicode_file(char)
-            self.pdf_canvas.drawImage(path, x, y,
-                                      width=self.style["emojiWidth"], height=self.style["emojiWidth"],
-                                      mask='auto')
+        path = self.drawingQuery.get_unicode_file(char)
+        if path is None:
+            return
+        self.pdf_canvas.drawImage(path, x, y,
+                                  width=self.style["emojiWidth"], height=self.style["emojiWidth"],
+                                  mask='auto')
 
 
     def drawChatBox(self, width, hight, x, y, c):
@@ -1298,18 +1291,14 @@ class GenerateInit:
         print(style)
 
         fontName = style["fontName"]
-        emojiFontName = style["emojiFontName"]
         paths = {
-            "fontDirPath": "resources/fonts/",
             "outputDirPath": ""
         }
-        paths["fontPath"] = paths["fontDirPath"] + fontName + ".ttf"
-        paths["fontInfoPath"] = paths["fontDirPath"] + fontName + "_aspect_ratio.db"
-        if style["ifUseColorEmoji"] == "false":
-            paths["emojiFontPath"] = paths["fontDirPath"] + emojiFontName + ".ttf"
-        elif style["ifUseColorEmoji"] == "true":
-            paths["emojiFontPath"] = paths["fontDirPath"] + f"{emojiFontName}/{emojiFontName}"
-            paths["emojiFontDBPath"] = paths["fontDirPath"] + f"{emojiFontName}/{emojiFontName}.db"
+        fontPath, fontIndex, fontWarning = fontResolver.resolve_font(fontName)
+        if fontWarning:
+            self.log(f"⚠️ {fontWarning}")
+        paths["fontPath"] = fontPath
+        paths["fontIndex"] = fontIndex
 
 
         ERRCODE = errcode.ErrCode("print")
