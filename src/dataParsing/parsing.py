@@ -18,6 +18,14 @@ protoDataType = [-2000, -1035, -2002, -2022, -5020, -5023, -8018, -5040]
 javaSerializedDataType = [-1049, -2017, -2025, -2011, -5008, -2007, -2025]
 
 
+def _first_text(*values):
+    """按顺序取第一个非空字符串（QQ 的显示名优先级）。"""
+    for value in values:
+        if value:
+            return value
+    return ""
+
+
 class QQParse:
     """QQ数据库读取，解析
 
@@ -141,7 +149,7 @@ class QQParse:
             self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_ERR, info)
             return False
 
-        friends = self.getFriends()
+        friends = self.getFriends(keep_all=(mode == "group"))
         groups = self.getGroups()
         groupMembers = self.getGroupMembers()
         if not friends or not groupMembers or not groups:
@@ -297,41 +305,30 @@ https://github.com/Hakuuyosei/QQHistoryExport上提issue，请附上output/parse
         # 读取发送者数据
         senders = {}
         if mode == "group":
+            members = groupMembers.get(targetQQ, {})
             for uin in self.senderUins:
-                uin_get_flag = False
                 if uin == targetQQ:
                     continue
                     # 如果发送者等于群QQ号，可能是更改群名之类的
-                if targetQQ in groupMembers:
-                    if uin in groupMembers[targetQQ]:
-                        if groupMembers[targetQQ][uin][0]:
-                            name = groupMembers[targetQQ][uin][0]
-                            senders[uin] = [name, ""]
-                            uin_get_flag = True
-                        elif groupMembers[targetQQ][uin][1]:
-                            name = groupMembers[targetQQ][uin][1]
-                            senders[uin] = [name, ""]
-                            uin_get_flag = True
-
-                if not uin_get_flag:
+                member = members.get(uin) or ["", "", ""]
+                friend = friends.get(uin) or ["", ""]
+                # 与 QQ 一致：群昵称 → 好友备注 → QQ昵称 → 群内自动备注 → 好友昵称
+                name = _first_text(member[1], friend[1], friend[0], member[2], member[0])
+                if name:
+                    senders[uin] = [name, ""]
+                else:
                     senders[uin] = ["", ""]
                     info = f"{uin}不在你的数据库中，一会需要你自己去填写昵称"
                     self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_WARN, info)
 
         elif mode == "friend":
             for uin in self.senderUins:
-                uin_get_flag = False
-
-                if uin in friends:
-                    if friends[uin][1]:
-                        name = friends[uin][1]
-                        senders[uin] = [name, ""]
-                        uin_get_flag = True
-                    elif friends[uin][0]:
-                        name = friends[uin][0]
-                        senders[uin] = [name, ""]
-                        uin_get_flag = True
-                if not uin_get_flag:
+                friend = friends.get(uin) or ["", ""]
+                # 与 QQ 一致：好友备注 → QQ昵称
+                name = _first_text(friend[1], friend[0])
+                if name:
+                    senders[uin] = [name, ""]
+                else:
                     senders[uin] = ["", ""]
                     info = f"{uin}不在你的数据库中，一会需要你自己去填写昵称"
                     self.ERRCODE.log("parse", self.ERRCODE.LOG_LEVEL_WARN, info)
@@ -386,9 +383,10 @@ https://github.com/Hakuuyosei/QQHistoryExport上提issue，请附上output/parse
             # 1
             return msgOutData
 
-    def getFriends(self):
+    def getFriends(self, keep_all=False):
         """获取好友列表
 
+        :param keep_all: 保留没有单聊表的好友（群聊需要备注名）
         :return: {friendQQNumber: [FriendName, FriendRemark]}
         """
         friends = {}
@@ -404,6 +402,8 @@ https://github.com/Hakuuyosei/QQHistoryExport上提issue，请附上output/parse
                 FriendName = self.decrypt(row[1])
                 FriendRemark = self.decrypt(row[2])
                 friends[friendQQNumber] = [FriendName, FriendRemark]
+        if keep_all:
+            return friends
         friendsKeys = list(friends.keys())
         for friendQQNumber in friendsKeys:
             # 计算qq号的md5值
@@ -447,7 +447,7 @@ https://github.com/Hakuuyosei/QQHistoryExport上提issue，请附上output/parse
         :return: {[groupQQNumber]: {memberQQ: [memberName, membernick]}}
         """
         groupMembers = {}
-        cmd = "SELECT troopuin, memberuin, friendnick, troopnick FROM TroopMemberInfo"
+        cmd = "SELECT troopuin, memberuin, friendnick, troopnick, autoremark FROM TroopMemberInfo"
         try:
             cursors = self.fill_cursors_nost(cmd)
         except Exception as e:
@@ -460,10 +460,10 @@ https://github.com/Hakuuyosei/QQHistoryExport上提issue，请附上output/parse
                 memberQQ = self.decrypt(row[1])
                 memberName = self.decrypt(row[2])
                 memberNick = self.decrypt(row[3])
-                self.decrypt(row[2])
+                autoRemark = self.decrypt(row[4])
                 if groupQQNumber in groupMembers.keys():
-                    groupMembers[groupQQNumber][memberQQ] = [memberName, memberNick]
+                    groupMembers[groupQQNumber][memberQQ] = [memberName, memberNick, autoRemark]
                 else:
-                    groupMembers[groupQQNumber] = {memberQQ: [memberName, memberNick]}
+                    groupMembers[groupQQNumber] = {memberQQ: [memberName, memberNick, autoRemark]}
         return groupMembers
         # print(self.groupMembers)
