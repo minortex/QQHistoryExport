@@ -1,4 +1,4 @@
-"""聊天图片按需回源：本地缓存 → 设备单张 → 图片 CDN。"""
+"""聊天图片按需回源：本地缓存 → 设备原图 → 图片 CDN → 设备缩略图。"""
 
 from __future__ import annotations
 
@@ -74,11 +74,16 @@ def _cached(md5: str) -> Path | None:
     return None
 
 
-def _device_path(md5: str) -> str:
+def _device_path(md5: str, protocol: str = "chatimg") -> str:
     from src.dataParsing.protoDataParsing import crc64
 
-    filename = "Cache_" + hex(crc64("chatimg:" + md5)).replace("0x", "")
-    return f"{adb.DEFAULT_CHATIMG}/{filename[-3:]}/{filename}"
+    root = {
+        "chatimg": adb.DEFAULT_CHATIMG,
+        "chatraw": adb.DEFAULT_CHATRAW,
+        "chatthumb": adb.DEFAULT_CHATTHUMB,
+    }[protocol]
+    filename = "Cache_" + hex(crc64(f"{protocol}:{md5}")).replace("0x", "")
+    return f"{root}/{filename[-3:]}/{filename}"
 
 
 def _sniff_extension(data: bytes) -> str:
@@ -108,7 +113,7 @@ def _fetch_http(md5: str, kind: str) -> bytes:
     return response.content
 
 
-def _fetch_device(md5: str) -> bytes:
+def _fetch_device(md5: str, protocol: str = "chatimg") -> bytes:
     cfg = load_config()
     if not cfg.is_adb:
         return b""
@@ -116,7 +121,7 @@ def _fetch_device(md5: str) -> bytes:
         try:
             return adb._run(
                 cfg,
-                ["exec-out", f"cat {shlex.quote(_device_path(md5))}"],
+                ["exec-out", f"cat {shlex.quote(_device_path(md5, protocol))}"],
                 timeout=30,
             )
         except adb.AdbError:
@@ -139,12 +144,19 @@ def ensure(md5: str, kind: str = "") -> Path | None:
             return cached
         if _fail_until.get(md5, 0) > time.time():
             return None
-        data = _fetch_device(md5)
+        data = _fetch_device(md5, "chatimg")
         ext = _sniff_extension(data) if len(data) >= 100 else "bin"
+        if ext == "bin":
+            data = _fetch_device(md5, "chatraw")
+            ext = _sniff_extension(data) if len(data) >= 100 else "bin"
         if ext == "bin":
             with _semaphore:
                 data = _fetch_http(md5, kind)
             ext = _sniff_extension(data) if data else "bin"
+        if ext == "bin":
+            # 原图被清理且 CDN 已过期时，退而使用手机里残留的缩略图
+            data = _fetch_device(md5, "chatthumb")
+            ext = _sniff_extension(data) if len(data) >= 100 else "bin"
         if ext == "bin":
             _fail_until[md5] = time.time() + FAIL_TTL
             return None

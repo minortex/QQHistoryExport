@@ -23,9 +23,12 @@ from .settings import AppConfig
 
 DEFAULT_DEVICE_SQLITE = "/data/data/com.termux/files/usr/bin/sqlite3"
 DEVICE_TMP_ROOT = "/tmp/qqhistory"
-DEFAULT_CHATIMG = (
-    "/data/media/0/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/chatpic/chatimg"
+DEFAULT_CHATPIC_ROOT = (
+    "/data/media/0/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/chatpic"
 )
+DEFAULT_CHATIMG = f"{DEFAULT_CHATPIC_ROOT}/chatimg"
+DEFAULT_CHATRAW = f"{DEFAULT_CHATPIC_ROOT}/chatraw"
+DEFAULT_CHATTHUMB = f"{DEFAULT_CHATPIC_ROOT}/chatthumb"
 DEFAULT_EMOTICON_ROOT = (
     "/data/media/0/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/.emotionsm"
 )
