@@ -695,7 +695,9 @@ select:focus {
   background: var(--surface);
   box-shadow: var(--shadow-2);
   font-size: 12px;
-  max-height: 320px;
+  /* 固定尺寸：切换小时时分钟数多少不会改变卡片高度，鼠标不会“离开” */
+  width: 200px;
+  height: min(320px, calc(100vh - 120px));
   z-index: 40;
   animation: rail-card-in 0.12s ease-out;
 }
@@ -710,8 +712,9 @@ select:focus {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  min-width: 86px;
-  max-height: 300px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
   overflow-y: auto;
 }
 

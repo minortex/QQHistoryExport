@@ -203,27 +203,29 @@ function minuteTs(hour: string, minute: string): number {
     >
       <div class="rail-card">
         <div
-          v-if="currentHour"
           ref="minutesRef"
           class="rail-card-minutes"
           @mouseenter="cancelHourHover"
         >
-          <div class="rail-card-title">{{ currentHour }} 时</div>
-          <p v-if="loadingMinutes" class="rail-card-empty">加载中…</p>
-          <p v-else-if="minutesError" class="rail-card-empty">{{ minutesError }}</p>
-          <template v-else>
-            <button
-              v-for="minute in minutes"
-              :key="minute.key"
-              type="button"
-              class="rail-card-minute"
-              :class="{ active: minute.key === activeMinute }"
-              @click="onMinuteClick(minute.key)"
-            >
-              <span>{{ currentHour }}:{{ minute.key }}</span><em>{{ minute.count }}</em>
-            </button>
-            <p v-if="!minutes.length" class="rail-card-empty">该小时无消息</p>
+          <template v-if="currentHour">
+            <div class="rail-card-title">{{ currentHour }} 时</div>
+            <p v-if="loadingMinutes" class="rail-card-empty">加载中…</p>
+            <p v-else-if="minutesError" class="rail-card-empty">{{ minutesError }}</p>
+            <template v-else>
+              <button
+                v-for="minute in minutes"
+                :key="minute.key"
+                type="button"
+                class="rail-card-minute"
+                :class="{ active: minute.key === activeMinute }"
+                @click="onMinuteClick(minute.key)"
+              >
+                <span>{{ currentHour }}:{{ minute.key }}</span><em>{{ minute.count }}</em>
+              </button>
+              <p v-if="!minutes.length" class="rail-card-empty">该小时无消息</p>
+            </template>
           </template>
+          <p v-else class="rail-card-empty">悬停选择小时</p>
         </div>
 
         <div ref="hoursRef" class="rail-card-hours">
