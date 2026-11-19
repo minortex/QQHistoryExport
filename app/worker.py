@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import traceback
@@ -101,8 +102,25 @@ def main() -> int:
             elif "错误" in line or "失败" in line:
                 emit({"stage": "parse", "log": line})
 
+        emoji_config = ""
+        if via_adb:
+            from . import adb
+
+            try:
+                data = adb._run(
+                    cfg,
+                    ["exec-out", f"cat {shlex.quote(adb.DEFAULT_EMOJI_CONFIG)}"],
+                    timeout=30,
+                )
+            except adb.AdbError:
+                data = b""
+            if data:
+                emoji_file = work / "face_config.json"
+                emoji_file.write_bytes(data)
+                emoji_config = str(emoji_file)
+
         mode = "group" if conv["kind"] == "troop" else "friend"
-        configs = parser_configs(cfg, conv["uin"], mode, ts_from, ts_to)
+        configs = parser_configs(cfg, conv["uin"], mode, ts_from, ts_to, emoji_config)
         err = ErrCode("func", on_log)
         parse = parsing.QQParse(configs, err)
         ok = parse.procDb()
@@ -110,7 +128,7 @@ def main() -> int:
             raise RuntimeError("解析未完成：" + " | ".join(last[-3:]))
 
         emit({"stage": "ingest", "progress": 80, "message": "写入消息库"})
-        stats = ingest.ingest(work, conv, ts_from, ts_to, emit)
+        stats = ingest.ingest(work, conv, ts_from, ts_to, emit, cfg, via_adb)
         shutil.rmtree(work / "output", ignore_errors=True)
         if via_adb:
             from . import cache

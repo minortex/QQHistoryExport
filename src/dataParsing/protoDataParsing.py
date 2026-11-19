@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 import sys
 import re
@@ -21,6 +22,45 @@ sys.path.append("...")
 from src.proto import Msg_pb2
 from src.proto.RichMsg_pb2 import PicRec
 from src.proto.RichMsg_pb2 import Msg
+
+# QQ 表情包文件：前 200 字节与固定 key 异或（SecurityUtile.xorInLimit）
+_EMOTICON_XOR_KEY = (0, 1, 0, 1)
+_EMOTICON_XOR_LIMIT = 200
+_IMAGE_EXT = {"jpeg": "jpg", "mpo": "jpg", "apng": "png"}
+
+
+def _deobfuscate_emoticon(data):
+    buf = bytearray(data)
+    for i in range(min(_EMOTICON_XOR_LIMIT, len(buf))):
+        buf[i] ^= _EMOTICON_XOR_KEY[i % len(_EMOTICON_XOR_KEY)]
+    return bytes(buf)
+
+
+def _image_extension(data):
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            fmt = (img.format or "").lower()
+    except OSError:
+        return ""
+    return _IMAGE_EXT.get(fmt, fmt)
+
+
+def decodeEmoticonFile(data):
+    """解出表情包图片内容，返回 (图片字节, 后缀)；无法识别返回 (b"", "")。
+
+    QQ 写盘时会混淆前 200 字节，个别文件可能已是明文，两种都试。
+    """
+    if len(data) < 32:
+        return b"", ""
+    plain = _deobfuscate_emoticon(data)
+    ext = _image_extension(plain)
+    if ext:
+        return plain, ext
+    ext = _image_extension(data)
+    if ext:
+        return data, ext
+    return b"", ""
+
 
 _crc64_init = False
 _crc64_table = [0] * 256
@@ -71,16 +111,67 @@ class protoDataParsing():
 
         try:
             if os.path.exists(output_path):
-                return {}, output_path
+                return True, output_path
             elif os.path.exists(res_path):
                 shutil.copy(res_path, output_path)
-                return {}, output_path
+                return True, output_path
             else:
                 self.ERRCODE.parse_err("MARKETFACE_NOT_EXIST", [data])
                 return False, None
         except OSError:
             self.ERRCODE.parse_err("IO_ERROR", [traceback.format_exc()])
             return False, None
+
+    def marketFaceMsg(self, face_name, ep_id=None, e_id=None):
+        """按表情名生成大表情消息块
+
+        :param face_name: 表情名，如 微笑
+        :param ep_id: 表情包 id（MarkFaceMessage.dwTabID）
+        :param e_id: 表情 id（MarkFaceMessage.sbufID 的十六进制）
+        :return: msgOutData
+        """
+        if not self.configs["needMarketFace"]:
+            return {"t": "uns", "c": {"text": "[大表情]", "type": "media"}}
+        if ep_id and e_id:
+            path = self._copyLocalMarketFace(ep_id, e_id)
+            if path:
+                return {"t": "img", "c": {"path": path, "name": face_name or e_id, "type": "marketface"}}
+            if self.configs.get("lazyImages"):
+                # 本地没有表情包文件，交给 Web 端按需从手机回源
+                return {"t": "img", "c": {"path": f"lazyface:{ep_id}/{e_id}",
+                                          "name": face_name or e_id, "type": "marketface"}}
+        if not face_name:
+            return {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
+        state, path = self.decodeMarketFace(face_name)
+        if state:
+            return {"t": "img", "c": {"path": path, "name": face_name, "type": "marketface"}}
+        return {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
+
+    def _copyLocalMarketFace(self, ep_id, e_id):
+        """从本地 .emotionsm/<epId>/<eId> 解出表情包图片并写入 output。"""
+        root = self.configs.get("emoticonPath") or ""
+        if not root:
+            return ""
+        source = os.path.join(root, str(ep_id), e_id)
+        if not os.path.isfile(source):
+            return ""
+        try:
+            with open(source, "rb") as fh:
+                data, ext = decodeEmoticonFile(fh.read())
+        except OSError:
+            self.ERRCODE.parse_err("IO_ERROR", [traceback.format_exc()])
+            return ""
+        if not data:
+            self.ERRCODE.parse_err("MARKETFACE_NOT_EXIST", [source])
+            return ""
+        output_path = f"output/emoticons/emoticon2/{e_id}.{ext}"
+        try:
+            with open(output_path, "wb") as fh:
+                fh.write(data)
+        except OSError:
+            self.ERRCODE.parse_err("IO_ERROR", [traceback.format_exc()])
+            return ""
+        return output_path
 
     def video_thumb(self, input_path, output_path):
         try:
@@ -443,30 +534,17 @@ class protoDataParsing():
 
         # 大号表情
         elif msgType == -8018:
-            if self.configs["needMarketFace"] == False:
-                msgOutData = {
-                    "t": "uns",
-                    "c": {"text": "[大表情]", "type": "media"}
-                }
-            elif self.configs["needMarketFace"] == True:
+            if not self.configs["needMarketFace"]:
+                msgOutData = self.marketFaceMsg("")
+            else:
                 try:
                     doc = Msg_pb2.marketFace()
                     doc.ParseFromString(msgData)
                     marketFaceName = doc.field7.decode("utf-8")[1:]
-                    state, msgDeseData = self.decodeMarketFace(marketFaceName)
-                    if state:
-                        msgOutData = {
-                            "t": "img",
-                            "c": {"path": msgDeseData, "name": marketFaceName, "type": "marketface"}
-                        }
-                    else:
-                        msgOutData = {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
-                except:
+                    msgOutData = self.marketFaceMsg(marketFaceName)
+                except Exception:
                     msgOutData = {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
                     self.ERRCODE.parse_err("MARKETFACE_DESERIALIZATION_ERROR", [msgType, msgData])
-
-
-
 
             return msgOutData
 

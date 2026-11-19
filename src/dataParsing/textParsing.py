@@ -25,6 +25,17 @@ class textParsing():
         """
         with open('resources/emoticons/emoticon1/face_config.json', encoding='utf-8') as f:
             emojis = json.load(f)
+        # adb 模式下用手机上的表情表补充（新版表情的 AQLid 只在手机里）
+        extra_path = self.configs.get("emojiConfigPath") or ""
+        if extra_path and os.path.isfile(extra_path):
+            try:
+                with open(extra_path, encoding='utf-8') as f:
+                    extra = json.load(f)
+                merged = {e["AQLid"]: e for e in emojis['sysface']}
+                merged.update({e["AQLid"]: e for e in extra.get('sysface', [])})
+                emojis = {"sysface": list(merged.values())}
+            except (OSError, json.JSONDecodeError):
+                pass
         new_emoji_map = {}
         for e in emojis['sysface']:
             if self.configs["QQEmojiVer"] == "new":
@@ -99,9 +110,18 @@ class textParsing():
                         msgOutData["c"]["index"] = index
                         msgList.append(msgOutData)
                     else:
-                        msgOutData = {"t": "err", "c": {"text": "[QQ表情]", "type": "text"}}
-                        self.ERRCODE.parse_err("EMOJI_NOT_EXIST", [self.configs["QQEmojiVer"], str(num)])
-                        msgList.append(msgOutData)
+                        if (self.configs["QQEmojiVer"] == "new"
+                                and self.configs.get("lazyImages")):
+                            # 新版表情包里没有这张，交给入库阶段从手机 sysface 资源取
+                            msgOutData = {
+                                "t": "qqemoji",
+                                "c": {"path": "lazyemoji:" + index, "index": index}
+                            }
+                            msgList.append(msgOutData)
+                        else:
+                            msgOutData = {"t": "err", "c": {"text": "[QQ表情]", "type": "text"}}
+                            self.ERRCODE.parse_err("EMOJI_NOT_EXIST", [self.configs["QQEmojiVer"], str(num)])
+                            msgList.append(msgOutData)
 
                 else:
                     msgOutData = {"t": "err", "c": {"text": "[QQ表情]", "type": "text"}}

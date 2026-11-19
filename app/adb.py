@@ -26,6 +26,15 @@ DEVICE_TMP_ROOT = "/tmp/qqhistory"
 DEFAULT_CHATIMG = (
     "/data/media/0/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/chatpic/chatimg"
 )
+DEFAULT_EMOTICON_ROOT = (
+    "/data/media/0/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/.emotionsm"
+)
+DEFAULT_SYSFACE_ROOT = (
+    "/data/data/com.tencent.mobileqq/files/qq_emoticon_res/sysface_res"
+)
+DEFAULT_EMOJI_CONFIG = (
+    "/data/data/com.tencent.mobileqq/files/qq_emoticon_res/face_config.json"
+)
 META_TABLES = ("Friends", "TroopInfoV2", "TroopMemberInfo")
 
 

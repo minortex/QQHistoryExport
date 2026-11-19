@@ -149,6 +149,9 @@ class AppConfig:
     def effective_video_path(self) -> str:
         return _first_existing(self.video_path, self._derive("shortvideo"))
 
+    def effective_emoticon_path(self) -> str:
+        return _first_existing(self._derive(".emotionsm"))
+
     def _derive(self, suffix: str) -> str:
         if not self.media_root:
             return ""
@@ -275,6 +278,7 @@ def parser_configs(
     mode: str,
     ts_from: int | None = None,
     ts_to: int | None = None,
+    emoji_config: str = "",
 ) -> dict:
     """构造现有解析器需要的 configs（键名与 src/dataParsing 保持一致）。"""
     configs = {
@@ -287,12 +291,14 @@ def parser_configs(
         "key": cfg.key,
         "needQQEmoji": cfg.need_qq_emoji,
         "QQEmojiVer": cfg.qq_emoji_ver,
+        "emojiConfigPath": emoji_config,
         "needImages": cfg.need_images,
         "imagesPath": cfg.effective_images_path(),
         "needVoice": cfg.need_voice,
         "voicePath": cfg.effective_voice_path(),
         "needVideo": cfg.need_video,
         "videoPath": cfg.effective_video_path(),
+        "emoticonPath": cfg.effective_emoticon_path(),
         "needMarketFace": cfg.need_market_face,
         "needJavaDeser": cfg.need_java_deser,
         "lazyImages": cfg.lazy_images,

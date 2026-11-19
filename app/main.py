@@ -380,9 +380,9 @@ def api_messages(
 
 @app.get("/lazy/{conv_key}/{md5}")
 def api_lazy_media(conv_key: str, md5: str):
-    path = media_cache.ensure(md5)
+    path = media_cache.ensure(md5, media_cache.conversation_kind(conv_key))
     if path is None:
-        return Response(status_code=404, headers={"Cache-Control": "public, max-age=300"})
+        return Response(status_code=404, headers={"Cache-Control": "no-store"})
     return FileResponse(
         path,
         media_type=media_cache.media_type(path),

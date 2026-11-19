@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import binascii
 import traceback
 import subprocess
@@ -8,15 +9,47 @@ import javaobj
 from src.errcode.errcode import ErrCode
 from .textParsing import textParsing
 
+_HEX_ID = re.compile(r"^[0-9a-f]{8,64}$")
+
+
+def _java_bytes(value):
+    """javaobj 的 byte[] 是 JavaByteArray（有符号字节元组）。"""
+    data = getattr(value, "_data", None)
+    if not data:
+        return b""
+    return bytes(byte & 0xFF for byte in data)
+
+
+def _marketFacePackId(value):
+    try:
+        pack = int(value)
+    except (TypeError, ValueError):
+        return None
+    return pack if pack > 0 else None
+
+
+def _marketFaceId(jsonData):
+    """MarkFaceMessage → 表情 id，规则同 EmosmUtils.a(byte[], mediaType)。"""
+    raw = _java_bytes(jsonData.get("sbufID"))
+    if not raw:
+        return None
+    if jsonData.get("mediaType") == 2:  # 声音表情的 id 是明文
+        eid = raw.decode("utf-8", "ignore")
+    else:
+        eid = raw.hex()
+    return eid if _HEX_ID.match(eid) else None
+
 
 class javaSerializedDataParsing():
     """java序列化相关类型的解析
 
     """
-    def __init__(self, errcodeobj: ErrCode, textparsingobj: textParsing, configs):
+    def __init__(self, errcodeobj: ErrCode, textparsingobj: textParsing, configs,
+                 proto_parsingobj):
         self.ERRCODE = errcodeobj
         self.textParsing = textparsingobj
         self.configs = configs
+        self.protoDataParsing = proto_parsingobj
 
 
     def javaDeserializationToJson(self, data):
@@ -183,15 +216,19 @@ class javaSerializedDataParsing():
         #         f.write(msgData)
         #     1
 
-        # 推荐名片
+        # 表情包（MSG_TYPE_MEDIA_MARKFACE），java 序列化的 MarkFaceMessage
         elif msgType == -2007:
-            # print(-2007, binascii.hexlify(msgData).decode())
-            self.ERRCODE.parse_err("DIDNOT_PARSE_MSG", [msgType, msgData, extStr])
-            msgOutData = {
-                "t": "uns",
-                "c": {"text": "[名片]", "type": "media"}
-            }
-            return msgOutData
+            if not self.configs["needMarketFace"]:
+                return {"t": "uns", "c": {"text": "[大表情]", "type": "media"}}
+            state, jsonData = self.javaDeserializationToJson(msgData)
+            if not state or not jsonData:
+                self.ERRCODE.parse_err("MARKETFACE_DESERIALIZATION_ERROR", [msgType, msgData])
+                return {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
+            return self.protoDataParsing.marketFaceMsg(
+                jsonData.get("faceName"),
+                _marketFacePackId(jsonData.get("dwTabID")),
+                _marketFaceId(jsonData),
+            )
 
 
 

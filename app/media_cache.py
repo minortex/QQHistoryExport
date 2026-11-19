@@ -1,4 +1,4 @@
-"""聊天图片按需回源：先用本地缓存，未命中再从设备拉取单个文件。"""
+"""聊天图片按需回源：本地缓存 → 设备单张 → 图片 CDN。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,25 @@ import threading
 import time
 from pathlib import Path
 
+import requests
 from PIL import Image
 
 from . import adb
 from .settings import MEDIA_CACHE_DIR, ensure_dirs, load_config
 
 CACHE_DIR = MEDIA_CACHE_DIR
-FAIL_TTL = 300
+FAIL_TTL = 30
 MAX_CONCURRENT = 3
+HTTP_TIMEOUT = (5, 20)
+HTTP_UA = (
+    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Version/4.0 Chrome/122.0.6261.120 Mobile Safari/537.36 V1_AND_SQ_8.8.90_1_HD"
+)
+# 群图/好友图的 CDN 直链，md5 就是 PicRec 里的 md5（chatimg:<md5> 的来源）
+_CDN_URLS = {
+    "troop": "http://gchat.qpic.cn/gchatpic_new/0/0-0-{md5}/0",
+    "friend": "http://c2cpicdw.qpic.cn/offpic_new/0/{md5}/0",
+}
 
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 _locks: dict[str, threading.Lock] = {}
@@ -36,6 +47,14 @@ _MEDIA_TYPES = {
 
 def media_type(path: Path) -> str:
     return _MEDIA_TYPES.get(path.suffix.lstrip(".").lower(), "application/octet-stream")
+
+
+def conversation_kind(conv_key: str) -> str:
+    """troop:123 / troop_123 → troop（前端把冒号换成了下划线）。"""
+    for sep in (":", "_"):
+        if sep in conv_key:
+            return conv_key.split(sep, 1)[0]
+    return conv_key
 
 
 def _lock_for(md5: str) -> threading.Lock:
@@ -71,8 +90,41 @@ def _sniff_extension(data: bytes) -> str:
     return {"jpeg": "jpg", "mpo": "jpg"}.get(fmt, fmt or "bin")
 
 
-def ensure(md5: str) -> Path | None:
-    """返回本地缓存的图片路径；未命中时通过 adb 拉取单个文件。"""
+def _fetch_http(md5: str, kind: str) -> bytes:
+    """按 md5 从图片 CDN 直接取原图，不需要登录态。"""
+    template = _CDN_URLS.get(kind)
+    if not template:
+        return b""
+    try:
+        response = requests.get(
+            template.format(md5=md5),
+            headers={"User-Agent": HTTP_UA},
+            timeout=HTTP_TIMEOUT,
+        )
+    except requests.RequestException:
+        return b""
+    if response.status_code != 200:
+        return b""
+    return response.content
+
+
+def _fetch_device(md5: str) -> bytes:
+    cfg = load_config()
+    if not cfg.is_adb:
+        return b""
+    with _semaphore:
+        try:
+            return adb._run(
+                cfg,
+                ["exec-out", f"cat {shlex.quote(_device_path(md5))}"],
+                timeout=30,
+            )
+        except adb.AdbError:
+            return b""
+
+
+def ensure(md5: str, kind: str = "") -> Path | None:
+    """返回本地缓存路径；未命中时依次尝试设备文件与图片 CDN。"""
     md5 = md5.upper()
     if not _MD5_RE.match(md5):
         return None
@@ -87,23 +139,12 @@ def ensure(md5: str) -> Path | None:
             return cached
         if _fail_until.get(md5, 0) > time.time():
             return None
-        cfg = load_config()
-        if not cfg.is_adb:
-            return None
-        remote = _device_path(md5)
-        with _semaphore:
-            try:
-                data = adb._run(
-                    cfg,
-                    ["exec-out", f"cat {shlex.quote(remote)}"],
-                    timeout=30,
-                )
-            except adb.AdbError:
-                data = b""
-        if len(data) < 100:
-            _fail_until[md5] = time.time() + FAIL_TTL
-            return None
-        ext = _sniff_extension(data)
+        data = _fetch_device(md5)
+        ext = _sniff_extension(data) if len(data) >= 100 else "bin"
+        if ext == "bin":
+            with _semaphore:
+                data = _fetch_http(md5, kind)
+            ext = _sniff_extension(data) if data else "bin"
         if ext == "bin":
             _fail_until[md5] = time.time() + FAIL_TTL
             return None

@@ -37,7 +37,7 @@ class QQParse:
         self.textParsing = textParsing(self.ERRCODE, self.configs)
         self.unserializedDataParsing = unserializedDataParsing(self.ERRCODE, self.textParsing, self.configs)
         self.protoDataParsing = protoDataParsing(self.ERRCODE, self.textParsing, self.configs)
-        self.javaSerializedDataParsing = javaSerializedDataParsing(self.ERRCODE, self.textParsing, self.configs)
+        self.javaSerializedDataParsing = javaSerializedDataParsing(self.ERRCODE, self.textParsing, self.configs, self.protoDataParsing)
 
     def createOutputFolder(self):
         """创建输出文件夹
