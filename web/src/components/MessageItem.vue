@@ -69,6 +69,19 @@ function imageUrl(block: Block): string {
   return mediaUrl(props.convKey, block.c?.path)
 }
 
+function imageStyle(block: Block): Record<string, string> | undefined {
+  if (block.t !== 'img') return undefined
+  const width = Number(block.c?.w)
+  const height = Number(block.c?.h)
+  if (!width || !height) return undefined
+  // 预留与最终渲染一致的尺寸，懒加载完成后列表高度不再变化
+  const scale = Math.min(1, 320 / Math.max(width, height))
+  return {
+    width: `${Math.round(width * scale)}px`,
+    height: `${Math.round(height * scale)}px`,
+  }
+}
+
 function openImage(url: string) {
   window.open(url, '_blank', 'noopener')
 }
@@ -111,6 +124,7 @@ function openImage(url: string) {
               v-if="!failedImages.has(index)"
               class="image"
               :class="{ emoji: block.t === 'qqemoji' }"
+              :style="imageStyle(block)"
               :src="imageUrl(block)"
               :alt="block.c?.name || '图片'"
               loading="lazy"

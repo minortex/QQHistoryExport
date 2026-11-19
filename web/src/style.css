@@ -512,11 +512,26 @@ select:focus {
 }
 
 .load-status {
-  display: flex;
-  justify-content: center;
-  padding: 10px 0 6px;
+  /* 悬浮在列表顶部，不参与布局：出现/消失不会推动消息 */
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  margin: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
   font-size: 12px;
   color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.load-status.load-more {
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .load-more {
@@ -889,6 +904,7 @@ select:focus {
 }
 
 .msg-list {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1087,6 +1103,7 @@ select:focus {
   display: block;
   max-width: 320px;
   max-height: 320px;
+  object-fit: contain;
   border-radius: 8px;
   cursor: zoom-in;
   margin: 4px 0;

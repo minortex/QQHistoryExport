@@ -222,10 +222,12 @@ class protoDataParsing():
                 if self.configs.get("lazyImages") and doc.bigMsgUrl:
                     # QQ 直接下载地址（picplatform），懒加载回源时优先使用
                     msgOutData["c"]["url"] = doc.bigMsgUrl
-                # msgOutData["c"]["imgType"] = doc.uint32_image_type
-                # 数据中，这两项宽高不可靠，请注意！
-                # msgOutData["c"]["imgWidth"] = doc.uint32_height
-                # msgOutData["c"]["imgHeight"] = doc.uint32_width
+                # PicRec 把宽放在 uint32_height、高放在 uint32_image_type（已按实际文件核对）
+                width, height = doc.uint32_height, doc.uint32_image_type
+                if 0 < width <= 20000 and 0 < height <= 20000:
+                    # 供前端预留图片占位，避免懒加载完成后撑高导致滚动跳动
+                    msgOutData["c"]["w"] = width
+                    msgOutData["c"]["h"] = height
 
             except:
                 # protobuf反序列化失败
