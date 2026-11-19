@@ -1022,6 +1022,13 @@ select:focus {
 
 .body {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.message.self .body {
+  align-items: flex-end;
 }
 
 .meta {
@@ -1041,10 +1048,8 @@ select:focus {
   border: none;
   border-radius: 14px;
   padding: 7px 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
   min-width: 0;
+  line-height: 1.5;
   box-shadow: var(--shadow-1);
 }
 
@@ -1059,6 +1064,8 @@ select:focus {
 }
 
 .reply {
+  display: block;
+  margin-bottom: 4px;
   background: var(--surface-2);
   border-left: 3px solid var(--accent);
   border-radius: 6px;
@@ -1074,11 +1081,12 @@ select:focus {
 }
 
 .image {
+  display: block;
   max-width: 320px;
   max-height: 320px;
   border-radius: 8px;
   cursor: zoom-in;
-  align-self: flex-start;
+  margin: 4px 0;
 }
 
 .image:not(.emoji) {
@@ -1088,23 +1096,31 @@ select:focus {
 }
 
 .image.emoji {
-  max-width: 24px;
-  max-height: 24px;
   display: inline;
-  vertical-align: middle;
+  width: 1.2em;
+  height: 1.2em;
+  margin: 0 1px;
+  vertical-align: -0.25em;
+  border-radius: 0;
   cursor: default;
 }
 
 .audio {
+  display: block;
   width: 240px;
+  margin: 4px 0;
 }
 
 .video {
+  display: block;
   max-width: 360px;
   border-radius: 8px;
+  margin: 4px 0;
 }
 
 .file {
+  display: block;
+  margin: 4px 0;
   color: var(--accent);
   text-decoration: none;
 }

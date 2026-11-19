@@ -343,7 +343,6 @@ https://github.com/FFmpeg/FFmpeg （LGPL bulid）
 
 https://github.com/FFmpeg/FFmpeg （LGPL bulid）
 
-表情：
-https://github.com/im0qianqian/QQ-Emoticon
+表情图片不随仓库分发，运行时从手机 QQ 的数据目录按需读取。
 
 另外感谢：[Young-Lord (LY) (github.com)](https://github.com/Young-Lord)提供的建议和资料

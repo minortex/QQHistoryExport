@@ -142,6 +142,12 @@ class protoDataParsing():
                                           "name": face_name or e_id, "type": "marketface"}}
         if not face_name:
             return {"t": "err", "c": {"text": "[大表情]", "type": "media"}}
+        if self.configs.get("lazyImages") and self.configs["QQEmojiVer"] == "new":
+            qsid = self.textParsing.emojiIndexByName(face_name)
+            if qsid:
+                # 经典大表情按名字对应新版系统表情，图片从手机 sysface 资源取
+                return {"t": "img", "c": {"path": f"lazyemoji:{qsid}",
+                                          "name": face_name, "type": "marketface"}}
         state, path = self.decodeMarketFace(face_name)
         if state:
             return {"t": "img", "c": {"path": path, "name": face_name, "type": "marketface"}}

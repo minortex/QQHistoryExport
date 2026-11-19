@@ -33,6 +33,15 @@ store.init_db()
 cache.sweep_cache()
 
 
+@app.middleware("http")
+async def _no_cache_index(request, call_next):
+    """index.html 不缓存，避免重建前端后仍加载旧 hash 的静态资源。"""
+    response = await call_next(request)
+    if request.url.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _imported_keys() -> set[str]:
     return {c["key"] for c in store.list_conversations()}
 

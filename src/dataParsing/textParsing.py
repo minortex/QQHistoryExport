@@ -37,13 +37,21 @@ class textParsing():
             except (OSError, json.JSONDecodeError):
                 pass
         new_emoji_map = {}
+        self.emoji_name_map = {}
         for e in emojis['sysface']:
             if self.configs["QQEmojiVer"] == "new":
                 new_emoji_map[e["AQLid"]] = e["QSid"]
             else:
                 if len(e["EMCode"]) == 3:
                     new_emoji_map[e["AQLid"]] = str(int(e["EMCode"]) - 100)
+            name = str(e.get("QDes") or "").lstrip("/")
+            if name and e["AQLid"] in new_emoji_map:
+                self.emoji_name_map[name] = new_emoji_map[e["AQLid"]]
         return new_emoji_map
+
+    def emojiIndexByName(self, name):
+        """表情名（如 微笑）→ QSid；仓库不再内置图片，供大表情回退到手机资源。"""
+        return self.emoji_name_map.get(str(name or "").lstrip("/"), "")
 
     def parse(self, msg):
         """处理文本信息
