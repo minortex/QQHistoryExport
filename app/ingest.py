@@ -190,6 +190,8 @@ def ingest(work_dir: Path, conv: dict, ts_from: int, ts_to: int, emit, cfg,
     total = sum(1 for _ in chat_data.open("rb"))
     _materialize_lazy_media(chat_data, output_dir, cfg, via_adb, emit)
 
+    links: dict[str, str] = {}
+
     def messages():
         with chat_data.open("r", encoding="utf-8") as fh:
             for line in fh:
@@ -203,6 +205,16 @@ def ingest(work_dir: Path, conv: dict, ts_from: int, ts_to: int, emit, cfg,
                 ts = int(obj.get("i") or 0)
                 sender = str(obj.get("s") or "")
                 mtype = str(obj.get("t") or "")
+                content = obj.get("c")
+                if isinstance(content, dict):
+                    url = content.get("url")
+                    path = str(content.get("path") or "")
+                    if url and path.startswith("lazy:"):
+                        # 记录 QQ 直链，payload 里不必再带长 URL
+                        links[path[len("lazy:"):]] = str(url)
+                        content = {k: v for k, v in content.items() if k != "url"}
+                        obj["c"] = content
+                        line = json.dumps(obj, ensure_ascii=False)
                 # 解析器把媒体写到 output/ 下，这里改写成相对于会话媒体目录的路径
                 yield ts, sender, mtype, line.replace('"output/', '"')
 
@@ -222,6 +234,7 @@ def ingest(work_dir: Path, conv: dict, ts_from: int, ts_to: int, emit, cfg,
     stats = store.replace_range(
         conv, messages(), senders, ts_from, ts_to, on_progress
     )
+    store.save_media_links(links)
     emit(
         {
             "stage": "ingest",

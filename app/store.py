@@ -44,6 +44,10 @@ create table if not exists window(
   ts_to integer not null,
   primary key(conv_key, ts_from, ts_to)
 );
+create table if not exists media_link(
+  md5 text primary key,
+  url text not null
+);
 """
 
 
@@ -241,6 +245,33 @@ def _where(conv_key: str, ts_from: int, ts_to: int, sender: str) -> tuple[str, l
         sql += " and sender=?"
         args.append(sender)
     return sql, args
+
+
+def save_media_links(links: dict[str, str]) -> None:
+    """记录图片 md5 → QQ 直链（PicRec.bigMsgUrl），供懒加载回源。"""
+    if not links:
+        return
+    conn = connect()
+    try:
+        with conn:
+            conn.executemany(
+                "insert into media_link(md5, url) values(?, ?) "
+                "on conflict(md5) do update set url=excluded.url",
+                [(md5.upper(), url) for md5, url in links.items()],
+            )
+    finally:
+        conn.close()
+
+
+def media_link(md5: str) -> str:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "select url from media_link where md5=?", (md5.upper(),)
+        ).fetchone()
+        return row["url"] if row else ""
+    finally:
+        conn.close()
 
 
 def count_messages(conv_key: str, ts_from: int, ts_to: int, sender: str = "") -> int:

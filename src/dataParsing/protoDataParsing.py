@@ -219,6 +219,9 @@ class protoDataParsing():
                 # print(doc.uint32_width, doc.uint32_height, doc.uint32_image_type)
                 msgOutData["c"]["type"] = "pic"
                 msgOutData["c"]["size"] = doc.size
+                if self.configs.get("lazyImages") and doc.bigMsgUrl:
+                    # QQ 直接下载地址（picplatform），懒加载回源时优先使用
+                    msgOutData["c"]["url"] = doc.bigMsgUrl
                 # msgOutData["c"]["imgType"] = doc.uint32_image_type
                 # 数据中，这两项宽高不可靠，请注意！
                 # msgOutData["c"]["imgWidth"] = doc.uint32_height

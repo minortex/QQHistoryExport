@@ -88,7 +88,9 @@ class _Assets:
         if path.startswith("lazy:"):
             md5 = path[5:]
             cached = next(iter(MEDIA_CACHE_DIR.glob(f"{md5}.*")), None)
-            return cached or media_cache.ensure(md5, media_cache.conversation_kind(self.conv_key))
+            return cached or media_cache.ensure(
+                md5, media_cache.conversation_kind(self.conv_key), store.media_link(md5)
+            )
         if path.startswith("avatars/"):
             candidate = AVATAR_DIR / Path(path).name
             return candidate if candidate.is_file() else None
@@ -538,7 +540,9 @@ def export_pdf(
         if path.startswith("lazy:"):
             match = next(iter(MEDIA_CACHE_DIR.glob(f"{path[5:]}.*")), None)
             if match is None:
-                match = media_cache.ensure(path[5:], media_cache.conversation_kind(conv["key"]))
+                match = media_cache.ensure(
+                    path[5:], media_cache.conversation_kind(conv["key"]), store.media_link(path[5:])
+                )
             if match is None:
                 return ""
             rel = f"images/{match.name}"

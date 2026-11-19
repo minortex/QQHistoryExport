@@ -1,4 +1,4 @@
-"""聊天图片按需回源：本地缓存 → 设备原图 → 图片 CDN → 设备缩略图。"""
+"""聊天图片按需回源：本地缓存 → 设备原图 → QQ 直链 → 图片 CDN → 设备缩略图。"""
 
 from __future__ import annotations
 
@@ -95,6 +95,21 @@ def _sniff_extension(data: bytes) -> str:
     return {"jpeg": "jpg", "mpo": "jpg"}.get(fmt, fmt or "bin")
 
 
+def _fetch_direct(url: str) -> bytes:
+    """请求 QQ 下发的图片直链（PicRec.bigMsgUrl）。"""
+    if not url:
+        return b""
+    if url.startswith("/"):
+        url = "https://gchat.qpic.cn" + url
+    try:
+        response = requests.get(url, headers={"User-Agent": HTTP_UA}, timeout=HTTP_TIMEOUT)
+    except requests.RequestException:
+        return b""
+    if response.status_code != 200:
+        return b""
+    return response.content
+
+
 def _fetch_http(md5: str, kind: str) -> bytes:
     """按 md5 从图片 CDN 直接取原图，不需要登录态。"""
     template = _CDN_URLS.get(kind)
@@ -128,7 +143,7 @@ def _fetch_device(md5: str, protocol: str = "chatimg") -> bytes:
             return b""
 
 
-def ensure(md5: str, kind: str = "") -> Path | None:
+def ensure(md5: str, kind: str = "", url: str = "") -> Path | None:
     """返回本地缓存路径；未命中时依次尝试设备文件与图片 CDN。"""
     md5 = md5.upper()
     if not _MD5_RE.match(md5):
@@ -149,6 +164,9 @@ def ensure(md5: str, kind: str = "") -> Path | None:
         if ext == "bin":
             data = _fetch_device(md5, "chatraw")
             ext = _sniff_extension(data) if len(data) >= 100 else "bin"
+        if ext == "bin":
+            data = _fetch_direct(url)
+            ext = _sniff_extension(data) if data else "bin"
         if ext == "bin":
             with _semaphore:
                 data = _fetch_http(md5, kind)

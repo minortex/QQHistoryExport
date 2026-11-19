@@ -389,7 +389,9 @@ def api_messages(
 
 @app.get("/lazy/{conv_key}/{md5}")
 def api_lazy_media(conv_key: str, md5: str):
-    path = media_cache.ensure(md5, media_cache.conversation_kind(conv_key))
+    path = media_cache.ensure(
+        md5, media_cache.conversation_kind(conv_key), store.media_link(md5)
+    )
     if path is None:
         return Response(status_code=404, headers={"Cache-Control": "no-store"})
     return FileResponse(
