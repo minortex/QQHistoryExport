@@ -1101,12 +1101,19 @@ select:focus {
 
 .image {
   display: block;
-  max-width: 320px;
-  max-height: 320px;
+  max-width: 135px;
+  max-height: 135px;
   object-fit: contain;
   border-radius: 8px;
   cursor: zoom-in;
   margin: 4px 0;
+}
+
+/* 没有宽高信息的旧数据：固定方块兜底，避免加载后撑高 */
+.image:not(.sized):not(.emoji):not(.marketface) {
+  width: 135px;
+  height: 135px;
+  object-fit: cover;
 }
 
 .image:not(.emoji) {
@@ -1123,6 +1130,34 @@ select:focus {
   vertical-align: -0.25em;
   border-radius: 0;
   cursor: default;
+}
+
+.image.marketface {
+  width: 100px;
+  height: 100px;
+  margin: 2px 0;
+  object-fit: contain;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+
+.image-viewer img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: var(--shadow-2);
 }
 
 .audio {

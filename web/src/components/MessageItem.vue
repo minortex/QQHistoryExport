@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { blockList } from '../api'
 import type { Block, Message, Sender } from '../api'
 import { formatBytes, formatTime, mediaUrl } from '../utils'
+
+// 与 QQ 一致：聊天气泡内图片的长边上限 135dp、短边下限 45dp
+const IMAGE_MAX = 135
+const IMAGE_MIN = 45
 
 const props = defineProps<{
   msg: Message
@@ -69,26 +73,57 @@ function imageUrl(block: Block): string {
   return mediaUrl(props.convKey, block.c?.path)
 }
 
+function isMarketFace(block: Block): boolean {
+  return block.t === 'img' && block.c?.type === 'marketface'
+}
+
 function imageStyle(block: Block): Record<string, string> | undefined {
-  if (block.t !== 'img') return undefined
+  if (block.t !== 'img' || isMarketFace(block)) return undefined
   const width = Number(block.c?.w)
   const height = Number(block.c?.h)
   if (!width || !height) return undefined
-  // 预留与最终渲染一致的尺寸，懒加载完成后列表高度不再变化
-  const scale = Math.min(1, 320 / Math.max(width, height))
+  const short = Math.min(width, height)
+  const long = Math.max(width, height)
+  let scale = 1
+  if (short < IMAGE_MIN) {
+    scale = IMAGE_MIN / short
+  } else if (long > IMAGE_MAX) {
+    scale = Math.max(IMAGE_MAX / long, IMAGE_MIN / short)
+  }
   return {
     width: `${Math.round(width * scale)}px`,
     height: `${Math.round(height * scale)}px`,
   }
 }
 
-function openImage(url: string) {
-  window.open(url, '_blank', 'noopener')
+function zoomable(block: Block): boolean {
+  return block.t === 'img' && !isMarketFace(block)
 }
+
+const viewerSrc = ref('')
+
+function openImage(url: string) {
+  viewerSrc.value = url
+}
+
+function closeViewer() {
+  viewerSrc.value = ''
+}
+
+function onViewerKey(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeViewer()
+}
+
+watch(viewerSrc, (value) => {
+  if (value) window.addEventListener('keydown', onViewerKey)
+  else window.removeEventListener('keydown', onViewerKey)
+})
+
+onBeforeUnmount(() => window.removeEventListener('keydown', onViewerKey))
 </script>
 
 <template>
-  <div class="msg-row" :class="{ selectable, selected }">
+  <div class="msg-row" :class="{ selectable, selected }" :data-ts="msg.ts">
     <label class="msg-check" :class="{ invisible: !selectable }" @click.stop>
       <input
         type="checkbox"
@@ -123,13 +158,13 @@ function openImage(url: string) {
             <img
               v-if="!failedImages.has(index)"
               class="image"
-              :class="{ emoji: block.t === 'qqemoji' }"
+              :class="{ emoji: block.t === 'qqemoji', marketface: isMarketFace(block), sized: !!imageStyle(block) }"
               :style="imageStyle(block)"
               :src="imageUrl(block)"
               :alt="block.c?.name || '图片'"
               loading="lazy"
               @error="onImageError(index)"
-              @click="openImage(imageUrl(block))"
+              @click="zoomable(block) && openImage(imageUrl(block))"
             />
             <span v-else class="unknown">[图片不可用]</span>
           </template>
@@ -173,4 +208,9 @@ function openImage(url: string) {
       </div>
     </div>
   </div>
+  <Teleport to="body">
+    <div v-if="viewerSrc" class="image-viewer" @click="closeViewer">
+      <img :src="viewerSrc" alt="图片预览" />
+    </div>
+  </Teleport>
 </template>

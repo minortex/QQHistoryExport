@@ -1121,7 +1121,6 @@ onBeforeUnmount(() => {
               :senders="senders"
               :self-uin="selfUin"
               :conv-key="conv.key"
-              :data-ts="msg.ts"
               :selectable="selectionMode"
               :selected="selectedIds.has(msg.id)"
               @toggle="(payload) => toggleSelected(msg, payload.shift)"
