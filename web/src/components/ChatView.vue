@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { ExportTaskView, LibraryConversation, Message, Sender } from '../api'
 import MessageItem from './MessageItem.vue'
+import RailDayItem from './RailDayItem.vue'
 import { useScrollSpy } from '@vizejs/ui/scroll-spy'
 import { dayKey, formatDate, toDateInput, toTimestamp } from '../utils'
 
@@ -146,6 +147,11 @@ function railJumpDay(date: string) {
   void jumpToTs(toTimestamp(date))
 }
 
+function railJump(date: string, ts?: number) {
+  if (!date) return
+  void jumpToTs(ts ?? toTimestamp(date))
+}
+
 function railJumpYear(year: string) {
   const group = railGroups.value.find((item) => item.year === year)
   const list = railListRef.value
@@ -185,11 +191,17 @@ async function fetchDay(date: string, allowImport: boolean, focusTs = 0) {
   olderPending.value = false
   noMore.value = false
   try {
-    const resp = await api.messages(props.conv.key, {
+    const params: Record<string, string | number> = {
       ts_from: 0,
       ts_to: dayEnd - 1,
       limit: PAGE,
-    })
+    }
+    if (focusTs) params.after_ts = focusTs - 1
+    let resp = await api.messages(props.conv.key, params)
+    if (focusTs && !resp.messages.length) {
+      delete params.after_ts
+      resp = await api.messages(props.conv.key, params)
+    }
     if (seq !== requestSeq) return
     messages.value = resp.messages
     hasMore.value = true
@@ -201,7 +213,9 @@ async function fetchDay(date: string, allowImport: boolean, focusTs = 0) {
     await nextTick()
     const el = scroller.value
     const index = focusTs ? messages.value.findIndex((msg) => msg.ts >= focusTs) : 0
-    const node = el?.querySelectorAll<HTMLElement>('[data-ts]')[Math.max(0, index)]
+    const targetIndex =
+      focusTs && index < 0 ? Math.max(0, messages.value.length - 1) : Math.max(0, index)
+    const node = el?.querySelectorAll<HTMLElement>('[data-ts]')[targetIndex]
     if (node) {
       node.scrollIntoView({ block: 'start' })
     } else if (el) {
@@ -239,7 +253,12 @@ async function jumpToTs(ts: number) {
   pillVisible.value = true
   hidePillSoon()
   const index = messages.value.findIndex((msg) => msg.ts >= ts)
-  if (index >= 0 && toDateInput(messages.value[index].ts) === date) {
+  if (
+    index >= 0 &&
+    messages.value[0] &&
+    messages.value[0].ts <= ts &&
+    toDateInput(messages.value[index].ts) === date
+  ) {
     const node = scroller.value?.querySelectorAll<HTMLElement>('[data-ts]')[index]
     if (node) {
       node.scrollIntoView({ block: 'start' })
@@ -1137,17 +1156,14 @@ onBeforeUnmount(() => {
         <div ref="railListRef" class="rail-days">
           <template v-for="group in railGroups" :key="group.year">
             <div class="rail-year" :data-year="group.year">{{ group.year }}</div>
-            <button
+            <RailDayItem
               v-for="day in group.days"
               :key="day.date"
-              class="rail-item"
-              :class="{ active: day.date === railActiveDay }"
-              :data-day="day.date"
-              :title="`${day.date.replaceAll('-', '/')} · ${day.count.toLocaleString()} 条`"
-              @click="railJumpDay(day.date)"
-            >
-              <i></i><span>{{ day.label }}</span>
-            </button>
+              :conv-key="conv.key"
+              :day="day"
+              :active="day.date === railActiveDay"
+              @jump="railJump"
+            />
           </template>
         </div>
       </nav>

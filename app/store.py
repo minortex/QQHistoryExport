@@ -263,6 +263,20 @@ def message_days(
     return [{"date": r["day"], "count": int(r["c"])} for r in rows]
 
 
+def message_buckets(
+    conv_key: str, ts_from: int, ts_to: int, unit: str
+) -> list[dict]:
+    fmt = "%H" if unit == "hour" else "%M"
+    where, args = _where(conv_key, ts_from, ts_to, "")
+    sql = (
+        f"select strftime('{fmt}', ts, 'unixepoch', 'localtime') as bucket, "
+        "count(*) as c " + where + " group by bucket order by bucket"
+    )
+    with connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [{"key": r["bucket"], "count": int(r["c"])} for r in rows]
+
+
 def fetch_messages_after(
     conv_key: str,
     ts_from: int,

@@ -139,6 +139,11 @@ export interface DayCount {
   count: number
 }
 
+export interface TimeBucket {
+  key: string
+  count: number
+}
+
 export interface MessagesPage {
   messages: Message[]
   hasMore: boolean
@@ -204,6 +209,13 @@ export const api = {
     req<{ days: DayCount[] }>(
       `/api/conversations/${encodeURIComponent(key)}/days`,
     ),
+  buckets: (key: string, date: string, unit: 'hour' | 'minute', hour?: string) => {
+    const query = new URLSearchParams({ date, unit })
+    if (hour !== undefined) query.set('hour', String(Number(hour)))
+    return req<{ buckets: TimeBucket[] }>(
+      `/api/conversations/${encodeURIComponent(key)}/buckets?${query.toString()}`,
+    )
+  },
   messages: (key: string, params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

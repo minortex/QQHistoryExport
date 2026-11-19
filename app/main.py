@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -286,6 +287,31 @@ def api_days(
         "minDate": ts_from,
         "maxDate": ts_to,
     }
+
+
+@app.get("/api/conversations/{conv_key}/buckets")
+def api_buckets(
+    conv_key: str,
+    date: str,
+    unit: str = "hour",
+    hour: int | None = None,
+) -> dict:
+    """按小时/分钟聚合某一天的消息数，供日期轴悬停卡片使用。"""
+    _require_conversation(conv_key)
+    if unit not in ("hour", "minute"):
+        raise HTTPException(400, "unit 只支持 hour 或 minute")
+    try:
+        day = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise HTTPException(400, "date 格式应为 YYYY-MM-DD") from exc
+    start = int(day.timestamp())
+    end = int((day + timedelta(days=1)).timestamp()) - 1
+    if unit == "minute":
+        if hour is None or not 0 <= hour <= 23:
+            raise HTTPException(400, "minute 聚合需要 0-23 的 hour")
+        start += hour * 3600
+        end = start + 3599
+    return {"buckets": store.message_buckets(conv_key, start, end, unit)}
 
 
 @app.get("/api/conversations/{conv_key}/ids")

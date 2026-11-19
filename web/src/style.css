@@ -686,6 +686,113 @@ select:focus {
   height: 2px;
 }
 
+.rail-card {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  font-size: 12px;
+  max-height: 320px;
+  z-index: 40;
+  animation: rail-card-in 0.12s ease-out;
+}
+
+.rail-card-hours {
+  border-left: 1px solid var(--border);
+  padding-left: 6px;
+}
+
+.rail-card-hours,
+.rail-card-minutes {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 86px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.rail-card-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0 6px 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rail-card-hour,
+.rail-card-minute {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rail-card-hour em,
+.rail-card-minute em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.rail-card-hour:hover,
+.rail-card-minute:hover {
+  background: var(--surface-2);
+}
+
+.rail-card-hour.active {
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+
+.rail-card-hour.active em {
+  color: var(--accent);
+}
+
+.rail-card-minute.active {
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.rail-card-minute.active em {
+  color: var(--accent);
+}
+
+.rail-card-empty {
+  margin: 2px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@keyframes rail-card-in {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .cal-head {
   display: flex;
   align-items: center;
