@@ -359,7 +359,7 @@ def export_html(
                 f'<div class="meta"><span>{html.escape(name)}</span><span>{stamp}</span></div>'
                 f'<div class="bubble">{body}</div></div></div>'
             )
-        if progress and (index % 200 == 0 or index == total):
+        if progress:
             progress(index, total)
     rail_parts: list[str] = []
     years: list[str] = []
@@ -478,7 +478,7 @@ def export_markdown(
                 part for part in (_md_block(block) for block in _block_list(payload)) if part
             )
             lines.extend([f"**{name}** {stamp}", "", content or "[空消息]", ""])
-        if progress and (index % 200 == 0 or index == total):
+        if progress:
             progress(index, total)
     target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return target
@@ -599,7 +599,7 @@ def export_pdf(
                 payload["s"] = message["sender"]
                 payload = _prefix_paths(payload, resolve)
                 handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                if progress and (index % 200 == 0 or index == total):
+                if progress:
                     progress(index, total)
 
         os.environ["QQHE_EMOJI_CACHE"] = str(DATA_DIR / "emoji_cache")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -168,11 +169,8 @@ def api_export(payload: dict) -> dict:
             raise HTTPException(400, "时间范围不合法")
         if store.count_messages(key, ts_from, ts_to, sender) == 0:
             raise HTTPException(400, "该区间没有可导出的消息")
-    filename = str(payload.get("filename") or "")
-    if not filename:
-        raise HTTPException(400, "缺少文件名")
     try:
-        task = exports.start(conv, fmt, filename, ts_from, ts_to, sender, ids)
+        task = exports.start(conv, fmt, ts_from, ts_to, sender, ids)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
@@ -188,20 +186,62 @@ def api_export_status(task_id: str) -> dict:
     return task.to_json()
 
 
-@app.get("/api/export/{task_id}/download")
-def api_export_download(task_id: str):
-    task = exports.get(task_id)
-    if task is None:
+@app.post("/api/export/{task_id}/cancel")
+def api_export_cancel(task_id: str) -> dict:
+    if exports.get(task_id) is None:
         raise HTTPException(404, "导出任务不存在")
-    if task.status != "completed":
-        raise HTTPException(409, "导出尚未完成")
-    path = Path(task.target)
-    archive = path.with_suffix(".zip")
-    if archive.is_file():
-        return FileResponse(archive, filename=archive.name, media_type="application/zip")
-    if not path.is_file():
-        raise HTTPException(404, "导出文件已不存在")
-    return FileResponse(path, filename=path.name)
+    if not exports.cancel(task_id):
+        raise HTTPException(409, "导出任务无法取消")
+    return {"ok": True}
+
+
+@app.get("/api/export-dir")
+def api_export_dir() -> dict:
+    return {"path": str(load_config().effective_export_dir())}
+
+
+@app.post("/api/export-dir")
+def api_set_export_dir(payload: dict) -> dict:
+    raw = str(payload.get("path") or "").strip()
+    if not raw:
+        raise HTTPException(400, "缺少文件夹路径")
+    path = Path(raw).expanduser()
+    if not path.is_dir():
+        raise HTTPException(400, f"文件夹不存在：{path}")
+    probe = path / f".qqhe-write-{uuid.uuid4().hex[:6]}"
+    try:
+        probe.write_text("", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(400, f"文件夹不可写：{path}（{exc.strerror or exc}）") from exc
+    finally:
+        probe.unlink(missing_ok=True)
+    cfg = load_config()
+    cfg.export_dir = str(path.resolve())
+    save_config(cfg)
+    return {"path": cfg.export_dir}
+
+
+@app.get("/api/fs/dirs")
+def api_fs_dirs(path: str = "") -> dict:
+    base = Path(path).expanduser() if path.strip() else load_config().effective_export_dir()
+    try:
+        base = base.resolve()
+        if not base.is_dir():
+            raise HTTPException(400, f"文件夹不存在：{base}")
+        dirs = []
+        for child in base.iterdir():
+            if child.name.startswith("."):
+                continue
+            try:
+                if child.is_dir():
+                    dirs.append({"name": child.name, "path": str(child)})
+            except OSError:
+                continue
+    except PermissionError as exc:
+        raise HTTPException(403, f"无权读取：{base}") from exc
+    dirs.sort(key=lambda item: item["name"].lower())
+    parent = str(base.parent) if base.parent != base else ""
+    return {"path": str(base), "parent": parent, "dirs": dirs}
 
 
 @app.get("/api/jobs/{job_id}")

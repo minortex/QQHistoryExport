@@ -156,8 +156,7 @@ QQNT的特征是，db文件夹下QQ号.db大小很小（小于10mb），存在db
 |---|---|---|
 | 消息库、媒体、原始窗口、缓存 | `/tmp/qqhe-history-export/` | `QQHE_DATA_DIR` |
 | 配置（含密钥，0600） | `~/.config/qqhe/config.json` | `QQHE_CONFIG_DIR` |
-| 导出临时文件（按任务分目录，供浏览器下载） | `/tmp/qqhe-history-export/exports/` | `QQHE_DATA_DIR` |
-| 原生模式预留导出目录（Web 模式不写入） | `~/QQHistoryExport/` | `QQHE_EXPORT_DIR` |
+| 导出文件 | 导出弹层选择的文件夹（默认 `~/Downloads`），保存在配置中 | — |
 | 缓存预算（raw + media_cache + avatars） | 500 MB | `QQHE_CACHE_LIMIT_MB` |
 
 缓存超预算时按文件修改时间淘汰最旧的；每次导入完成后只保留该会话最近 2 个原始窗口。

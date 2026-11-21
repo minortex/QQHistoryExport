@@ -32,7 +32,14 @@ const exportFormat = ref<'html' | 'pdf' | 'md'>('html')
 const exportCount = ref(0)
 const exportTask = ref<ExportTaskView | null>(null)
 const exportError = ref('')
-const exportName = ref('')
+const exportDir = ref('')
+const exportCancelling = ref(false)
+const dirOpen = ref(false)
+const dirPath = ref('')
+const dirParent = ref('')
+const dirItems = ref<{ name: string; path: string }[]>([])
+const dirLoading = ref(false)
+const dirError = ref('')
 let exportTimer: number | undefined
 
 const senders = ref<Record<string, Sender>>({})
@@ -735,24 +742,47 @@ function toggleExport() {
   exportError.value = ''
   exportCount.value = selectionMode.value ? selectedCount.value : props.conv.msg_count
   if (exportTask.value?.status !== 'running') exportTask.value = null
-  exportName.value = defaultExportName()
+  if (!exportDir.value) loadExportDir()
 }
 
-function defaultExportName(): string {
-  const cleaned = (props.conv.name || props.conv.key)
-    .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
-    .replace(/^\.+|\.+$/g, '')
-    .trim()
-  const fromTs = props.conv.min_ts || props.conv.max_ts || nowTs()
-  const toTs = props.conv.max_ts || fromTs
-  const from = toDateInput(fromTs).replaceAll('-', '')
-  const to = toDateInput(toTs).replaceAll('-', '')
-  return `${cleaned || 'chat'}_${from}-${to}.${exportFormat.value}`
+async function loadExportDir() {
+  try {
+    exportDir.value = (await api.exportDir()).path
+  } catch {
+    exportDir.value = ''
+  }
 }
 
-watch(exportFormat, (fmt) => {
-  if (exportName.value) exportName.value = exportName.value.replace(/\.[^./\\]+$/, '') + `.${fmt}`
-})
+async function openDirPicker() {
+  dirOpen.value = true
+  dirError.value = ''
+  await loadDirs(exportDir.value)
+}
+
+async function loadDirs(path: string) {
+  dirLoading.value = true
+  dirError.value = ''
+  try {
+    const res = await api.listDirs(path)
+    dirPath.value = res.path
+    dirParent.value = res.parent
+    dirItems.value = res.dirs
+  } catch (err) {
+    dirError.value = errorText(err)
+  } finally {
+    dirLoading.value = false
+  }
+}
+
+async function chooseDir() {
+  try {
+    const res = await api.setExportDir(dirPath.value)
+    exportDir.value = res.path
+    dirOpen.value = false
+  } catch (err) {
+    dirError.value = errorText(err)
+  }
+}
 
 function stopExportPoll() {
   if (exportTimer) window.clearInterval(exportTimer)
@@ -765,10 +795,7 @@ function pollExport(id: string) {
     try {
       const task = await api.exportStatus(id)
       exportTask.value = task
-      if (task.status !== 'running') {
-        stopExportPoll()
-        if (task.status === 'completed') downloadExport(task.id)
-      }
+      if (task.status !== 'running') stopExportPoll()
     } catch (err) {
       exportError.value = errorText(err)
       stopExportPoll()
@@ -776,12 +803,17 @@ function pollExport(id: string) {
   }, 800)
 }
 
-function downloadExport(id: string) {
-  const link = document.createElement('a')
-  link.href = `/api/export/${encodeURIComponent(id)}/download`
-  document.body.append(link)
-  link.click()
-  link.remove()
+async function cancelExport() {
+  const task = exportTask.value
+  if (!task || task.status !== 'running' || exportCancelling.value) return
+  exportCancelling.value = true
+  try {
+    await api.cancelExport(task.id)
+  } catch (err) {
+    exportError.value = errorText(err)
+  } finally {
+    exportCancelling.value = false
+  }
 }
 
 async function startExport() {
@@ -791,18 +823,15 @@ async function startExport() {
     return
   }
   try {
-    const filename = exportName.value.trim() || defaultExportName()
     const task = selectionMode.value
       ? await api.exportRange({
           key: props.conv.key,
           format: exportFormat.value,
-          filename,
           ids: [...selectedIds.value],
         })
       : await api.exportRange({
           key: props.conv.key,
           format: exportFormat.value,
-          filename,
           tsFrom: props.conv.min_ts || 0,
           tsTo: (props.conv.max_ts || nowTs()) + 1,
         })
@@ -965,7 +994,10 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  loadExportDir()
+})
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   stopExportPoll()
@@ -1008,11 +1040,12 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div class="export-row">
-            <label for="export-name">文件名</label>
-            <input id="export-name" v-model="exportName" type="text" spellcheck="false" />
+            <label>导出到</label>
+            <span class="dir-value" :title="exportDir">{{ exportDir || '默认文件夹' }}</span>
+            <button class="link-btn" @click="openDirPicker">选择…</button>
           </div>
           <p class="muted range-tip">
-            导出完成后由浏览器下载；HTML 含大媒体时打包为 zip。
+            文件名为「会话名_时间戳」，直接保存到所选文件夹；HTML 含大媒体时打包为 zip。
           </p>
           <p class="muted range-tip">
             <template v-if="selectionMode">将导出已勾选的 {{ exportCount.toLocaleString() }} 条</template>
@@ -1026,13 +1059,20 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <p v-if="exportTask?.status === 'completed'" class="export-done">
-            已生成，浏览器已开始下载。
-            <a :href="`/api/export/${exportTask.id}/download`">重新下载</a>
+            已保存：{{ exportTask.output }}
           </p>
           <p v-if="exportTask?.status === 'failed'" class="export-error">{{ exportTask.error }}</p>
           <div class="range-actions">
             <button class="link-btn" @click="exportOpen = false">关闭</button>
             <span class="range-tip"></span>
+            <button
+              v-if="exportTask?.status === 'running'"
+              class="link-btn"
+              :disabled="exportCancelling"
+              @click="cancelExport"
+            >
+              {{ exportCancelling ? '正在取消…' : '取消导出' }}
+            </button>
             <button
               class="primary"
               :disabled="!exportCount || exportTask?.status === 'running'"
@@ -1040,6 +1080,28 @@ onBeforeUnmount(() => {
             >
               导出
             </button>
+          </div>
+        </div>
+
+        <div v-if="dirOpen" class="range-backdrop" @click="dirOpen = false"></div>
+        <div v-if="dirOpen" class="range-popover dir-popover" @click.stop>
+          <div class="export-row">
+            <label>文件夹</label>
+            <span class="dir-value" :title="dirPath">{{ dirPath }}</span>
+          </div>
+          <div class="dir-list">
+            <button v-if="dirParent" class="dir-item" @click="loadDirs(dirParent)">..</button>
+            <button v-for="item in dirItems" :key="item.path" class="dir-item" @click="loadDirs(item.path)">
+              {{ item.name }}
+            </button>
+            <p v-if="dirLoading" class="muted range-tip">读取中…</p>
+            <p v-else-if="!dirItems.length" class="muted range-tip">没有子文件夹</p>
+          </div>
+          <p v-if="dirError" class="export-error">{{ dirError }}</p>
+          <div class="range-actions">
+            <button class="link-btn" @click="dirOpen = false">取消</button>
+            <span class="range-tip"></span>
+            <button class="primary" @click="chooseDir">选择此文件夹</button>
           </div>
         </div>
 

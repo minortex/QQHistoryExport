@@ -20,7 +20,6 @@ export interface ConfigView {
   adbSerial: string
   adbSqlite: string
   dataDir?: string
-  exportDir?: string
   cacheLimitMB?: number
 }
 
@@ -126,7 +125,8 @@ export interface ExportTaskView {
   convKey: string
   convName: string
   format: 'html' | 'pdf' | 'md'
-  status: 'running' | 'completed' | 'failed'
+  output: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
   progress: number
   message: string
   error: string
@@ -236,7 +236,6 @@ export const api = {
   exportRange: (payload: {
     key: string
     format: 'html' | 'pdf' | 'md'
-    filename: string
     tsFrom?: number
     tsTo?: number
     sender?: string
@@ -247,6 +246,18 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   exportStatus: (id: string) => req<ExportTaskView>(`/api/export/${id}`),
+  cancelExport: (id: string) =>
+    req<{ ok: boolean }>(`/api/export/${id}/cancel`, { method: 'POST' }),
+  exportDir: () => req<{ path: string }>('/api/export-dir'),
+  setExportDir: (path: string) =>
+    req<{ path: string }>('/api/export-dir', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  listDirs: (path = '') =>
+    req<{ path: string; parent: string; dirs: { name: string; path: string }[] }>(
+      `/api/fs/dirs?${new URLSearchParams({ path }).toString()}`,
+    ),
   stats: (key: string, params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

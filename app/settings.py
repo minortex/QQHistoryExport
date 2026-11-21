@@ -36,8 +36,6 @@ DEFAULT_DATA_DIR = Path(tempfile.gettempdir()) / "qqhe-history-export"
 _CUSTOM_DATA_DIR = bool(os.environ.get("QQHE_DATA_DIR", "").strip())
 DATA_DIR = _env_path("QQHE_DATA_DIR", DEFAULT_DATA_DIR)
 CONFIG_DIR = _env_path("QQHE_CONFIG_DIR", Path.home() / ".config" / "qqhe")
-EXPORT_DIR = _env_path("QQHE_EXPORT_DIR", Path.home() / "QQHistoryExport")
-EXPORT_CACHE_DIR = DATA_DIR / "exports"
 LIBRARY_DB = DATA_DIR / "library.sqlite3"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 MEDIA_DIR = DATA_DIR / "media"
@@ -94,8 +92,6 @@ def ensure_dirs() -> None:
         RAW_DIR,
         MEDIA_CACHE_DIR,
         CONFIG_DIR,
-        EXPORT_DIR,
-        EXPORT_CACHE_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
     _migrate_legacy()
@@ -122,6 +118,7 @@ class AppConfig:
     lazy_images: bool = False
     adb_serial: str = ""
     adb_sqlite: str = ""
+    export_dir: str = ""
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -150,6 +147,13 @@ class AppConfig:
 
     def effective_video_path(self) -> str:
         return _first_existing(self.video_path, self._derive("shortvideo"))
+
+    def effective_export_dir(self) -> Path:
+        raw = self.export_dir.strip()
+        if raw:
+            return Path(raw).expanduser()
+        downloads = Path.home() / "Downloads"
+        return downloads if downloads.is_dir() else Path.home()
 
     def effective_emoticon_path(self) -> str:
         return _first_existing(self._derive(".emotionsm"))
@@ -269,7 +273,7 @@ def public_config(cfg: AppConfig) -> dict:
         "adbSerial": cfg.adb_serial,
         "adbSqlite": cfg.adb_sqlite,
         "dataDir": str(DATA_DIR),
-        "exportDir": str(EXPORT_DIR),
+        "exportDir": str(cfg.effective_export_dir()),
         "cacheLimitMB": CACHE_LIMIT_MB,
     }
 
