@@ -32,7 +32,7 @@ const exportFormat = ref<'html' | 'pdf' | 'md'>('html')
 const exportCount = ref(0)
 const exportTask = ref<ExportTaskView | null>(null)
 const exportError = ref('')
-const exportPicking = ref(false)
+const exportName = ref('')
 let exportTimer: number | undefined
 
 const senders = ref<Record<string, Sender>>({})
@@ -735,6 +735,7 @@ function toggleExport() {
   exportError.value = ''
   exportCount.value = selectionMode.value ? selectedCount.value : props.conv.msg_count
   if (exportTask.value?.status !== 'running') exportTask.value = null
+  exportName.value = defaultExportName()
 }
 
 function defaultExportName(): string {
@@ -742,10 +743,16 @@ function defaultExportName(): string {
     .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
     .replace(/^\.+|\.+$/g, '')
     .trim()
-  const from = toDateInput(props.conv.min_ts || nowTs()).replaceAll('-', '')
-  const to = toDateInput(props.conv.max_ts || nowTs()).replaceAll('-', '')
+  const fromTs = props.conv.min_ts || props.conv.max_ts || nowTs()
+  const toTs = props.conv.max_ts || fromTs
+  const from = toDateInput(fromTs).replaceAll('-', '')
+  const to = toDateInput(toTs).replaceAll('-', '')
   return `${cleaned || 'chat'}_${from}-${to}.${exportFormat.value}`
 }
+
+watch(exportFormat, (fmt) => {
+  if (exportName.value) exportName.value = exportName.value.replace(/\.[^./\\]+$/, '') + `.${fmt}`
+})
 
 function stopExportPoll() {
   if (exportTimer) window.clearInterval(exportTimer)
@@ -758,12 +765,23 @@ function pollExport(id: string) {
     try {
       const task = await api.exportStatus(id)
       exportTask.value = task
-      if (task.status !== 'running') stopExportPoll()
+      if (task.status !== 'running') {
+        stopExportPoll()
+        if (task.status === 'completed') downloadExport(task.id)
+      }
     } catch (err) {
       exportError.value = errorText(err)
       stopExportPoll()
     }
   }, 800)
+}
+
+function downloadExport(id: string) {
+  const link = document.createElement('a')
+  link.href = `/api/export/${encodeURIComponent(id)}/download`
+  document.body.append(link)
+  link.click()
+  link.remove()
 }
 
 async function startExport() {
@@ -772,24 +790,19 @@ async function startExport() {
     exportError.value = '请先勾选要导出的消息'
     return
   }
-  exportPicking.value = true
   try {
-    const picked = await api.savePath({
-      filename: defaultExportName(),
-      format: exportFormat.value,
-    })
-    if (!picked.path) return
+    const filename = exportName.value.trim() || defaultExportName()
     const task = selectionMode.value
       ? await api.exportRange({
           key: props.conv.key,
           format: exportFormat.value,
-          target: picked.path,
+          filename,
           ids: [...selectedIds.value],
         })
       : await api.exportRange({
           key: props.conv.key,
           format: exportFormat.value,
-          target: picked.path,
+          filename,
           tsFrom: props.conv.min_ts || 0,
           tsTo: (props.conv.max_ts || nowTs()) + 1,
         })
@@ -797,8 +810,6 @@ async function startExport() {
     pollExport(task.id)
   } catch (err) {
     exportError.value = errorText(err)
-  } finally {
-    exportPicking.value = false
   }
 }
 
@@ -996,8 +1007,12 @@ onBeforeUnmount(() => {
               <option value="md">Markdown（纯文本，无图片）</option>
             </select>
           </div>
+          <div class="export-row">
+            <label for="export-name">文件名</label>
+            <input id="export-name" v-model="exportName" type="text" spellcheck="false" />
+          </div>
           <p class="muted range-tip">
-            点击「导出」后选择保存位置，文件名可修改。
+            导出完成后由浏览器下载；HTML 含大媒体时打包为 zip。
           </p>
           <p class="muted range-tip">
             <template v-if="selectionMode">将导出已勾选的 {{ exportCount.toLocaleString() }} 条</template>
@@ -1011,7 +1026,8 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <p v-if="exportTask?.status === 'completed'" class="export-done">
-            已保存：{{ exportTask.target }}
+            已生成，浏览器已开始下载。
+            <a :href="`/api/export/${exportTask.id}/download`">重新下载</a>
           </p>
           <p v-if="exportTask?.status === 'failed'" class="export-error">{{ exportTask.error }}</p>
           <div class="range-actions">
@@ -1019,10 +1035,10 @@ onBeforeUnmount(() => {
             <span class="range-tip"></span>
             <button
               class="primary"
-              :disabled="!exportCount || exportPicking || exportTask?.status === 'running'"
+              :disabled="!exportCount || exportTask?.status === 'running'"
               @click="startExport"
             >
-              {{ exportPicking ? '选择保存位置…' : '导出…' }}
+              导出
             </button>
           </div>
         </div>

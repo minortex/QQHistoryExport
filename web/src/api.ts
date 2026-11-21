@@ -126,7 +126,6 @@ export interface ExportTaskView {
   convKey: string
   convName: string
   format: 'html' | 'pdf' | 'md'
-  target: string
   status: 'running' | 'completed' | 'failed'
   progress: number
   message: string
@@ -237,7 +236,7 @@ export const api = {
   exportRange: (payload: {
     key: string
     format: 'html' | 'pdf' | 'md'
-    target: string
+    filename: string
     tsFrom?: number
     tsTo?: number
     sender?: string
@@ -248,11 +247,6 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   exportStatus: (id: string) => req<ExportTaskView>(`/api/export/${id}`),
-  savePath: (payload: { filename: string; format: 'html' | 'pdf' | 'md' }) =>
-    req<{ path: string }>('/api/save-path', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
   stats: (key: string, params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {

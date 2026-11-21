@@ -37,6 +37,7 @@ _CUSTOM_DATA_DIR = bool(os.environ.get("QQHE_DATA_DIR", "").strip())
 DATA_DIR = _env_path("QQHE_DATA_DIR", DEFAULT_DATA_DIR)
 CONFIG_DIR = _env_path("QQHE_CONFIG_DIR", Path.home() / ".config" / "qqhe")
 EXPORT_DIR = _env_path("QQHE_EXPORT_DIR", Path.home() / "QQHistoryExport")
+EXPORT_CACHE_DIR = DATA_DIR / "exports"
 LIBRARY_DB = DATA_DIR / "library.sqlite3"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 MEDIA_DIR = DATA_DIR / "media"
@@ -94,6 +95,7 @@ def ensure_dirs() -> None:
         MEDIA_CACHE_DIR,
         CONFIG_DIR,
         EXPORT_DIR,
+        EXPORT_CACHE_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
     _migrate_legacy()

@@ -1,6 +1,6 @@
 [project]
 name = "qqhistory-export"
-version = "0.4.0"
+version = "1.0.0"
 description = "QQ 聊天记录导出：Web 后端 + WebUI"
 requires-python = ">=3.11"
 dependencies = [

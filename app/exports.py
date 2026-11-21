@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import export, store
+from .settings import EXPORT_CACHE_DIR
 
 PDF_PROGRESS_RE = re.compile(r"生成进度：(\d+)%")
 
@@ -33,7 +37,6 @@ class ExportTask:
             "convKey": self.conv_key,
             "convName": self.conv_name,
             "format": self.format,
-            "target": self.target,
             "status": self.status,
             "progress": self.progress,
             "message": self.message,
@@ -46,6 +49,7 @@ class ExportManager:
     MAX_TASKS = 20
 
     def __init__(self) -> None:
+        EXPORT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self._tasks: dict[str, ExportTask] = {}
         self._lock = threading.Lock()
 
@@ -55,28 +59,21 @@ class ExportManager:
     def running(self) -> ExportTask | None:
         return next((task for task in self._tasks.values() if task.status == "running"), None)
 
-    def resolve_target(self, raw: str, fmt: str) -> Path:
+    def _target(self, task_id: str, filename: str, fmt: str) -> Path:
         expected = {"html": ".html", "pdf": ".pdf", "md": ".md"}[fmt]
-        target = Path(str(raw or "")).expanduser().resolve()
-        if target.suffix.lower() != expected:
-            target = target.with_name(target.name + expected)
-        if target.exists() and target.is_dir():
-            raise ValueError(f"目标是目录而非文件：{target}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        probe = target.parent / f".qqhe-write-{uuid.uuid4().hex[:6]}"
-        try:
-            probe.write_text("", encoding="utf-8")
-        except OSError as exc:
-            raise ValueError(f"导出目录不可写：{target.parent}（{exc.strerror or exc}）") from exc
-        finally:
-            probe.unlink(missing_ok=True)
-        return target
+        name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(filename or "").name).strip(" .")
+        if not name:
+            name = f"export{expected}"
+        if not name.lower().endswith(expected):
+            name += expected
+        directory = EXPORT_CACHE_DIR / task_id
+        return directory / name
 
     def start(
         self,
         conv: dict,
         fmt: str,
-        target_path: str,
+        filename: str,
         ts_from: int,
         ts_to: int,
         sender: str = "",
@@ -89,9 +86,10 @@ class ExportManager:
         with self._lock:
             if self.running() is not None:
                 raise RuntimeError("已有导出任务在运行，请稍候")
-            target = self.resolve_target(target_path, fmt)
+            task_id = uuid.uuid4().hex[:12]
+            target = self._target(task_id, filename, fmt)
             task = ExportTask(
-                id=uuid.uuid4().hex[:12],
+                id=task_id,
                 conv_key=conv["key"],
                 conv_name=conv.get("name") or conv["key"],
                 format=fmt,
@@ -101,6 +99,9 @@ class ExportManager:
             for old in sorted(self._tasks.values(), key=lambda item: item.created)[:-self.MAX_TASKS]:
                 if old.status != "running":
                     self._tasks.pop(old.id, None)
+                    old_dir = Path(old.target).parent
+                    if old_dir.name == old.id:
+                        shutil.rmtree(old_dir, ignore_errors=True)
             threading.Thread(
                 target=self._run,
                 args=(task, conv, ts_from, ts_to, sender, ids),
@@ -135,29 +136,44 @@ class ExportManager:
             elif "开始生成" in line or "出错" in line:
                 task.message = line
 
+        staging = EXPORT_CACHE_DIR / f".{task.id}.part"
         try:
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.mkdir(parents=True)
+            work = staging / Path(task.target).name
             if task.format == "html":
                 task.message = f"生成 HTML（{total} 条）"
-                export.export_html(
-                    conv, ts_from, ts_to, Path(task.target), sender, progress, ids
-                )
+                export.export_html(conv, ts_from, ts_to, work, sender, progress, ids)
+                self._bundle_html(work)
             elif task.format == "md":
                 task.message = f"生成 Markdown（{total} 条）"
-                export.export_markdown(
-                    conv, ts_from, ts_to, Path(task.target), sender, progress, ids
-                )
+                export.export_markdown(conv, ts_from, ts_to, work, sender, progress, ids)
             else:
                 task.message = f"排版 PDF（{total} 条）"
-                export.export_pdf(
-                    conv, ts_from, ts_to, Path(task.target), sender, progress, pdf_log, ids
-                )
+                export.export_pdf(conv, ts_from, ts_to, work, sender, progress, pdf_log, ids)
+            os.replace(staging, Path(task.target).parent)
             task.status = "completed"
             task.progress = 100
             task.message = f"已导出 {total} 条"
         except Exception as exc:  # noqa: BLE001 - 任务失败要留给前端
+            shutil.rmtree(staging, ignore_errors=True)
             task.status = "failed"
             task.error = f"{type(exc).__name__}: {exc}"
             task.message = "导出失败"
+
+    @staticmethod
+    def _bundle_html(path: Path) -> None:
+        assets = path.with_name(path.stem + "_assets")
+        if not assets.is_dir():
+            return
+        archive = path.with_suffix(".zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.write(path, path.name)
+            for child in sorted(assets.rglob("*")):
+                if child.is_file():
+                    bundle.write(child, child.relative_to(path.parent).as_posix())
+        path.unlink()
+        shutil.rmtree(assets)
 
 
 exports = ExportManager()

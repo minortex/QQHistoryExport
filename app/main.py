@@ -12,12 +12,11 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import adb, avatars, cache, media_cache, picker, store
+from . import adb, avatars, cache, media_cache, store
 from .exports import exports
 from .discover import discover
 from .jobs import TERMINAL, apply_events, jobs
 from .settings import (
-    EXPORT_DIR,
     MEDIA_DIR,
     ROOT,
     config_from_request,
@@ -169,11 +168,11 @@ def api_export(payload: dict) -> dict:
             raise HTTPException(400, "时间范围不合法")
         if store.count_messages(key, ts_from, ts_to, sender) == 0:
             raise HTTPException(400, "该区间没有可导出的消息")
-    directory = str(payload.get("target") or "")
-    if not directory:
-        raise HTTPException(400, "缺少保存路径")
+    filename = str(payload.get("filename") or "")
+    if not filename:
+        raise HTTPException(400, "缺少文件名")
     try:
-        task = exports.start(conv, fmt, directory, ts_from, ts_to, sender, ids)
+        task = exports.start(conv, fmt, filename, ts_from, ts_to, sender, ids)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
@@ -189,21 +188,20 @@ def api_export_status(task_id: str) -> dict:
     return task.to_json()
 
 
-@app.post("/api/save-path")
-def api_save_path(payload: dict) -> dict:
-    fmt = str(payload.get("format") or "html").lower()
-    suffixes = {"html": ".html", "pdf": ".pdf", "md": ".md"}
-    if fmt not in suffixes:
-        raise HTTPException(400, "不支持的导出格式")
-    suffix = suffixes[fmt]
-    name = Path(str(payload.get("filename") or f"export{suffix}")).name
-    if not name.lower().endswith(suffix):
-        name += suffix
-    try:
-        path = picker.save_file(name, suffix, str(EXPORT_DIR))
-    except RuntimeError as exc:
-        raise HTTPException(501, f"无法打开保存对话框：{exc}") from exc
-    return {"path": path or ""}
+@app.get("/api/export/{task_id}/download")
+def api_export_download(task_id: str):
+    task = exports.get(task_id)
+    if task is None:
+        raise HTTPException(404, "导出任务不存在")
+    if task.status != "completed":
+        raise HTTPException(409, "导出尚未完成")
+    path = Path(task.target)
+    archive = path.with_suffix(".zip")
+    if archive.is_file():
+        return FileResponse(archive, filename=archive.name, media_type="application/zip")
+    if not path.is_file():
+        raise HTTPException(404, "导出文件已不存在")
+    return FileResponse(path, filename=path.name)
 
 
 @app.get("/api/jobs/{job_id}")
